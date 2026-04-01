@@ -207,8 +207,6 @@ func GetAllTrackFrequencies(pool *pgxpool.Pool, ctx context.Context) ([]TrackEnt
 }
 
 // IncrementCharacterUsage increments the usage counter for a character by player profile.
-// Uses a placeholder column name - this should be updated with actual mappings.
-// TODO: Replace with correct character ID to column name mapping
 func IncrementCharacterUsage(pool *pgxpool.Pool, ctx context.Context, profileId uint32, characterId int) error {
 	columnName, err := CharacterIDToColumn(characterId)
 	if err != nil {
@@ -221,8 +219,6 @@ func IncrementCharacterUsage(pool *pgxpool.Pool, ctx context.Context, profileId 
 }
 
 // IncrementVehicleUsage increments the usage counter for a vehicle by player profile.
-// Uses a placeholder column name - this should be updated with actual mappings.
-// TODO: Replace with correct vehicle ID to column name mapping
 func IncrementVehicleUsage(pool *pgxpool.Pool, ctx context.Context, profileId uint32, vehicleId int) error {
 	columnName, err := VehicleIDToColumn(vehicleId)
 	if err != nil {
