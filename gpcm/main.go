@@ -89,6 +89,7 @@ func StartServer(reload bool) {
 	}
 
 	database.UpdateTables(pool, ctx)
+	qr2.SetTrackDB(pool, ctx)
 
 	allowDefaultDolphinKeys = config.AllowDefaultDolphinKeys
 
