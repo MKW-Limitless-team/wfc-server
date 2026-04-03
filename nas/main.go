@@ -189,6 +189,24 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for /api/mkw_tracks
+	if r.URL.Path == "/api/mkw_tracks" {
+		api.HandleMKWTracks(w, r)
+		return
+	}
+
+	// Check for /api/mkw_characters
+	if r.URL.Path == "/api/mkw_characters" {
+		api.HandleMKWCharacters(w, r)
+		return
+	}
+
+	// Check for /api/mkw_vehicles
+	if r.URL.Path == "/api/mkw_vehicles" {
+		api.HandleMKWVehicles(w, r)
+		return
+	}
+
 	logging.Info("NAS", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
 	replyHTTPError(w, 404, "404 Not Found")
 }

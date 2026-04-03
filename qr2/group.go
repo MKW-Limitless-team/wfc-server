@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"wwfc/common"
+	"wwfc/database"
 	"wwfc/logging"
 
 	"github.com/logrusorgru/aurora/v3"
@@ -50,7 +51,7 @@ type RaceResult struct {
 	Delta         int
 }
 
-var raceResults = map[string]map[int][]RaceResult{} // GroupName -> RaceNumber -> []RaceResult
+var raceResults = map[string]map[int][]RaceResult{}  // GroupName -> RaceNumber -> []RaceResult
 var racePlayers = map[string]map[uint32]PlayerInfo{} // GroupName -> ProfileID -> historical PlayerInfo
 
 // Timing storage for delta calculation using start/finish times
@@ -554,6 +555,11 @@ func ProcessMKWSelectRecord(profileId uint32, key string, value string) {
 		group.MKWRaceNumber++
 		group.MKWCourseID = int(courseId)
 		group.MKWEngineClassID = -1
+
+		if err := database.SelectTrackUsageForProfile(trackPool, trackCtx, int(courseId)); err != nil {
+			logging.Error(moduleName, "Failed to track course selection:", err)
+		}
+
 		return
 
 	case "wl:mkw_select_cc":
@@ -696,6 +702,10 @@ func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, cha
 	}
 
 	raceResults[group.GroupName][raceNumber] = append(raceResults[group.GroupName][raceNumber], raceResultData)
+
+	if err := database.IncrementTrackUsageForProfile(trackPool, trackCtx, profileId, int(raceResultData.CharacterID), int(raceResultData.VehicleID)); err != nil {
+		logging.Error(moduleName, "Failed to track race result:", err)
+	}
 
 	logging.Info(moduleName, "Stored race result for profile", aurora.BrightCyan(strconv.FormatUint(uint64(profileId), 10)),
 		"Race #:", aurora.Cyan(strconv.Itoa(raceNumber)),
