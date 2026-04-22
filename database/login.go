@@ -175,7 +175,7 @@ func (c *Connection) LoginUserToGPCM(userId uint64, gsbrcd string, profileId uin
 		lastIPAddress = &emptyString
 	}
 
-	// Find ban from device ID or IP address
+	// Find ban from profile ID or IP address
 	var banExists bool
 	var banTOS bool
 	var bannedDeviceIdList []uint32

@@ -1,6 +1,7 @@
 package qr2
 
 import (
+	"context"
 	"encoding/binary"
 	"net"
 	"sync"
@@ -10,8 +11,21 @@ import (
 	"wwfc/database"
 	"wwfc/logging"
 
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/logrusorgru/aurora/v3"
 )
+
+// Package-level database access for tracking usage
+var (
+	trackPool *pgxpool.Pool
+	trackCtx  context.Context
+)
+
+// SetTrackDB sets the database pool and context for tracking race/track usage.
+func SetTrackDB(p *pgxpool.Pool, c context.Context) {
+	trackPool = p
+	trackCtx = c
+}
 
 const (
 	QueryRequest            = 0x00

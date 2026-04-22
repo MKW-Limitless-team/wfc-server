@@ -150,6 +150,113 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (profile_id);
 
 --
+-- Name: tracks; Type: TABLE; Schema: public; Owner: wiilink
+--
+
+CREATE TABLE IF NOT EXISTS public.tracks (
+    track_name character varying PRIMARY KEY,
+    frequency bigint DEFAULT 0
+);
+
+--
+-- Name: characters; Type: TABLE; Schema: public; Owner: wiilink
+--
+
+CREATE TABLE IF NOT EXISTS public.characters (
+    profile_id bigint PRIMARY KEY,
+    baby_daisy bigint DEFAULT 0,
+    baby_luigi bigint DEFAULT 0,
+    baby_mario bigint DEFAULT 0,
+    baby_peach bigint DEFAULT 0,
+    birdo bigint DEFAULT 0,
+    bowser bigint DEFAULT 0,
+    bowser_jr bigint DEFAULT 0,
+    daisy bigint DEFAULT 0,
+    diddy_kong bigint DEFAULT 0,
+    donkey_kong bigint DEFAULT 0,
+    dry_bones bigint DEFAULT 0,
+    dry_bowser bigint DEFAULT 0,
+    funky_kong bigint DEFAULT 0,
+    king_boo bigint DEFAULT 0,
+    koopa_troopa bigint DEFAULT 0,
+    luigi bigint DEFAULT 0,
+    mario bigint DEFAULT 0,
+    mii_l_a_female bigint DEFAULT 0,
+    mii_l_a_male bigint DEFAULT 0,
+    mii_l_b_female bigint DEFAULT 0,
+    mii_l_b_male bigint DEFAULT 0,
+    mii_l_c_female bigint DEFAULT 0,
+    mii_l_c_male bigint DEFAULT 0,
+    mii_large bigint DEFAULT 0,
+    mii_m_a_female bigint DEFAULT 0,
+    mii_m_a_male bigint DEFAULT 0,
+    mii_m_b_female bigint DEFAULT 0,
+    mii_m_b_male bigint DEFAULT 0,
+    mii_m_c_female bigint DEFAULT 0,
+    mii_m_c_male bigint DEFAULT 0,
+    mii_medium bigint DEFAULT 0,
+    mii_s_a_female bigint DEFAULT 0,
+    mii_s_a_male bigint DEFAULT 0,
+    mii_s_b_female bigint DEFAULT 0,
+    mii_s_b_male bigint DEFAULT 0,
+    mii_s_c_female bigint DEFAULT 0,
+    mii_s_c_male bigint DEFAULT 0,
+    mii_small bigint DEFAULT 0,
+    peach bigint DEFAULT 0,
+    rosalina bigint DEFAULT 0,
+    toad bigint DEFAULT 0,
+    toadette bigint DEFAULT 0,
+    wario bigint DEFAULT 0,
+    waluigi bigint DEFAULT 0,
+    yoshi bigint DEFAULT 0
+);
+
+--
+-- Name: vehicles; Type: TABLE; Schema: public; Owner: wiilink
+--
+
+CREATE TABLE IF NOT EXISTS public.vehicles (
+    profile_id bigint PRIMARY KEY,
+    bit_bike bigint DEFAULT 0,
+    blue_falcon bigint DEFAULT 0,
+    booster_seat bigint DEFAULT 0,
+    bullet_bike bigint DEFAULT 0,
+    cheep_charger bigint DEFAULT 0,
+    classic_dragster bigint DEFAULT 0,
+    daytripper bigint DEFAULT 0,
+    dolphin_dasher bigint DEFAULT 0,
+    flame_flyer bigint DEFAULT 0,
+    flame_runner bigint DEFAULT 0,
+    honeycoupe bigint DEFAULT 0,
+    jet_bubble bigint DEFAULT 0,
+    jetsetter bigint DEFAULT 0,
+    mach_bike bigint DEFAULT 0,
+    magikruiser bigint DEFAULT 0,
+    mini_beast bigint DEFAULT 0,
+    offroader bigint DEFAULT 0,
+    phantom bigint DEFAULT 0,
+    piranha_prowler bigint DEFAULT 0,
+    quacker bigint DEFAULT 0,
+    shooting_star bigint DEFAULT 0,
+    sneakster bigint DEFAULT 0,
+    spear bigint DEFAULT 0,
+    sprinter bigint DEFAULT 0,
+    standard_bike_l bigint DEFAULT 0,
+    standard_bike_m bigint DEFAULT 0,
+    standard_bike_s bigint DEFAULT 0,
+    standard_kart_l bigint DEFAULT 0,
+    standard_kart_m bigint DEFAULT 0,
+    standard_kart_s bigint DEFAULT 0,
+    sugarscoot bigint DEFAULT 0,
+    super_blooper bigint DEFAULT 0,
+    tiny_titan bigint DEFAULT 0,
+    wario_bike bigint DEFAULT 0,
+    wild_wing bigint DEFAULT 0,
+    zip_zip bigint DEFAULT 0
+
+);
+
+--
 -- Name: events; Type: TABLE; Schema: public; Owner: wiilink
 --
 
@@ -163,4 +270,3 @@ CREATE TABLE IF NOT EXISTS public.events (
 --
 -- PostgreSQL database dump complete
 --
-
