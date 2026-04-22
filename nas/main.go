@@ -82,6 +82,12 @@ var regexGamestatsHost = regexp.MustCompile(`^([a-z\-]+\.)?gamestats2?\.gs\.`)
 var regexStage1URL = regexp.MustCompile(`^/w([0-9])$`)
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
+	if blocked, rule := common.IsIPBanned(r.RemoteAddr); blocked {
+		logging.Warn("NAS", "Blocked HTTP request from", aurora.BrightCyan(r.RemoteAddr), "matching", aurora.Cyan(rule))
+		replyHTTPError(w, http.StatusForbidden, "403 Forbidden")
+		return
+	}
+
 	// Check for *.sake.gs.* or sake.gs.*
 	if regexSakeHost.MatchString(r.Host) {
 		// Redirect to the sake server

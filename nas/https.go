@@ -84,6 +84,12 @@ func startHTTPSProxy(config common.Config) {
 			}
 
 			go func() {
+				if blocked, rule := common.IsIPBanned(conn.RemoteAddr().String()); blocked {
+					logging.Warn("NAS-TLS", "Blocked HTTPS connection from", aurora.BrightCyan(conn.RemoteAddr().String()), "matching", aurora.Cyan(rule))
+					conn.Close()
+					return
+				}
+
 				moduleName := "NAS-TLS:" + conn.RemoteAddr().String()
 
 				conn.SetDeadline(time.Now().UTC().Add(25 * time.Second))
@@ -237,6 +243,12 @@ func startHTTPSProxy(config common.Config) {
 		}
 
 		go func() {
+			if blocked, rule := common.IsIPBanned(conn.RemoteAddr().String()); blocked {
+				logging.Warn("NAS-TLS", "Blocked HTTPS connection from", aurora.BrightCyan(conn.RemoteAddr().String()), "matching", aurora.Cyan(rule))
+				conn.Close()
+				return
+			}
+
 			// logging.Info("NAS-TLS", "Receiving HTTPS request from", aurora.BrightCyan(conn.RemoteAddr()))
 
 			moduleName := "NAS-TLS:" + conn.RemoteAddr().String()

@@ -426,6 +426,12 @@ func frontendListen(server serverInfo) {
 			continue
 		}
 
+		if blocked, rule := common.IsIPBanned(conn.RemoteAddr().String()); blocked {
+			logging.Warn("FRONTEND", "Blocked", aurora.BrightCyan(server.rpcName), "connection from", aurora.BrightCyan(conn.RemoteAddr().String()), "matching", aurora.Cyan(rule))
+			conn.Close()
+			continue
+		}
+
 		if server.protocol == "tcp" {
 			err := conn.(*net.TCPConn).SetKeepAlive(true)
 			if err != nil {
