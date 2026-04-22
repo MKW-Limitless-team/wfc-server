@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"wwfc/gpcm"
+	"wwfc/logging"
 )
 
 func HandleKick(w http.ResponseWriter, r *http.Request) {
@@ -13,13 +14,14 @@ func HandleKick(w http.ResponseWriter, r *http.Request) {
 	var err string
 	var statusCode int
 
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		success, err, statusCode = handleKickImpl(r)
-	} else if r.Method == http.MethodOptions {
+	case http.MethodOptions:
 		statusCode = http.StatusNoContent
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	} else {
+	default:
 		err = "Incorrect request. POST only."
 		statusCode = http.StatusMethodNotAllowed
 		w.Header().Set("Allow", "POST")
@@ -42,7 +44,7 @@ func HandleKick(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
 
 	w.WriteHeader(statusCode)
-	w.Write(jsonData)
+	_, _ = w.Write(jsonData)
 }
 
 type KickRequestSpec struct {
@@ -78,6 +80,11 @@ func handleKickImpl(r *http.Request) (bool, string, int) {
 	}
 
 	gpcm.KickPlayerCustomMessage(req.ProfileID, req.Reason, gpcm.WWFCMsgKickedCustom)
+
+	logging.Event("profile_kicked", map[string]any{
+		"profile_id": req.ProfileID,
+		"reason":     req.Reason,
+	})
 
 	return true, "", http.StatusOK
 }

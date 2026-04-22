@@ -2,19 +2,14 @@ package common
 
 import (
 	"encoding/base64"
-	"errors"
-	"strings"
+	"encoding/binary"
+	"unicode/utf16"
 )
 
-type GameSpyBase64Encoding int
-
-const (
-	GameSpyBase64EncodingDefault   = iota // 0
-	GameSpyBase64EncodingAlternate        // 1
-	GameSpyBase64EncodingURLSafe          // 2
+var (
+	Base64DwcEncoding                = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-").WithPadding('*')
+	Base64GamespyAlternativeEncoding = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789[]").WithPadding('_')
 )
-
-var Base64DwcEncoding = base64.NewEncoding("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-").WithPadding('*')
 
 func Base32Encode(value uint64) string {
 	alpha := "0123456789abcdefghijklmnopqrstuv"
@@ -30,29 +25,13 @@ func Base32Encode(value uint64) string {
 	return encoded
 }
 
-func DecodeGameSpyBase64(gameSpyBase64 string, gameSpyBase64Encoding GameSpyBase64Encoding) ([]byte, error) {
-	base64String, err := GameSpyBase64ToBase64(gameSpyBase64, gameSpyBase64Encoding)
+func Base64Convert(input string, fromEncoding, toEncoding *base64.Encoding) (string, error) {
+	decoded, err := fromEncoding.DecodeString(input)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	return base64.StdEncoding.DecodeString(base64String)
-}
-
-func GameSpyBase64ToBase64(gameSpyBase64 string, gameSpyBase64Encoding GameSpyBase64Encoding) (string, error) {
-	switch gameSpyBase64Encoding {
-	case GameSpyBase64EncodingDefault:
-		return gameSpyBase64, nil
-
-	case GameSpyBase64EncodingAlternate:
-		return strings.NewReplacer("[", "+", "]", "/", "_", "=").Replace(gameSpyBase64), nil
-
-	case GameSpyBase64EncodingURLSafe:
-		return strings.NewReplacer("-", "+", "_", "/" /*, "=", "="*/).Replace(gameSpyBase64), nil
-
-	default:
-		return "", errors.New("invalid GameSpy Base64 encoding specified")
-	}
+	return toEncoding.EncodeToString(decoded), nil
 }
 
 func reverse(s string) string {
@@ -62,4 +41,35 @@ func reverse(s string) string {
 	}
 
 	return string(rns)
+}
+
+func UTF16Encode(s string, order binary.ByteOrder) []byte {
+	encoded := utf16.Encode([]rune(s))
+	buf := make([]byte, len(encoded)*2)
+	for i, v := range encoded {
+		order.PutUint16(buf[i*2:], v)
+	}
+	return buf
+}
+
+func UTF16Decode(u []byte, order binary.ByteOrder) string {
+	decoded := make([]uint16, len(u)/2)
+	for i := range decoded {
+		v := order.Uint16(u[i*2:])
+		if v == 0 {
+			decoded = decoded[:i]
+			break
+		}
+		decoded[i] = v
+	}
+	return string(utf16.Decode(decoded))
+}
+
+func NullTerminatedString(u []byte) string {
+	for i, b := range u {
+		if b == 0 {
+			return string(u[:i])
+		}
+	}
+	return string(u)
 }

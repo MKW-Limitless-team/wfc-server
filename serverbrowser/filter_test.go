@@ -3,33 +3,30 @@ package serverbrowser
 import (
 	"fmt"
 	"testing"
-	"wwfc/serverbrowser/filter"
+	"wwfc/filter"
 )
 
-func parseFilter(t *testing.T, expression string) error {
+func parseFilter(t *testing.T, expression string) {
 	_, err := filter.Parse(expression)
 	if err != nil {
 		t.Error(err)
 	}
-	return err
 }
 
-func evalFilter(t *testing.T, expression string, queryGame string, context map[string]string) (int64, error) {
+func evalFilter(t *testing.T, expression string, queryGame string, context map[string]string) {
 	tree, err := filter.Parse(expression)
 	if err != nil {
 		t.Error(err)
-		return 0, err
+		return
 	}
 
 	ret, err := filter.Eval(tree, context, queryGame)
 	if err != nil {
 		t.Error(err)
-		return 0, err
+		return
 	}
 
 	fmt.Printf("ret: %d\n", ret)
-
-	return ret, err
 }
 
 func TestParseFilter(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"wwfc/database"
+	"wwfc/logging"
 )
 
 func HandleUnban(w http.ResponseWriter, r *http.Request) {
@@ -13,13 +13,14 @@ func HandleUnban(w http.ResponseWriter, r *http.Request) {
 	var err string
 	var statusCode int
 
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		success, err, statusCode = handleUnbanImpl(r)
-	} else if r.Method == http.MethodOptions {
+	case http.MethodOptions:
 		statusCode = http.StatusNoContent
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	} else {
+	default:
 		err = "Incorrect request. POST only."
 		statusCode = http.StatusMethodNotAllowed
 		w.Header().Set("Allow", "POST")
@@ -42,7 +43,7 @@ func HandleUnban(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
 
 	w.WriteHeader(statusCode)
-	w.Write(jsonData)
+	_, _ = w.Write(jsonData)
 }
 
 type UnbanRequestSpec struct {
@@ -72,9 +73,13 @@ func handleUnbanImpl(r *http.Request) (bool, string, int) {
 		return false, "pid missing or 0 in request", http.StatusBadRequest
 	}
 
-	if !database.UnbanUser(pool, ctx, req.ProfileID) {
+	if !db.UnbanUser(req.ProfileID) {
 		return false, "Failed to unban user", http.StatusInternalServerError
 	}
+
+	logging.Event("profile_unbanned", map[string]any{
+		"profile_id": req.ProfileID,
+	})
 
 	return true, "", http.StatusOK
 }

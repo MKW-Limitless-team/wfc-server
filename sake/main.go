@@ -1,20 +1,13 @@
 package sake
 
 import (
-	"context"
-	"fmt"
 	"net/http"
-	"strings"
 	"wwfc/common"
-	"wwfc/logging"
-
-	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/logrusorgru/aurora/v3"
+	"wwfc/database"
 )
 
 var (
-	ctx  = context.Background()
-	pool *pgxpool.Pool
+	db database.Connection
 )
 
 func StartServer(reload bool) {
@@ -24,34 +17,16 @@ func StartServer(reload bool) {
 	common.ReadGameList()
 
 	// Start SQL
-	dbString := fmt.Sprintf("postgres://%s:%s@%s/%s", config.Username, config.Password, config.DatabaseAddress, config.DatabaseName)
-	dbConf, err := pgxpool.ParseConfig(dbString)
-	if err != nil {
-		panic(err)
-	}
-
-	pool, err = pgxpool.ConnectConfig(ctx, dbConf)
-	if err != nil {
-		panic(err)
-	}
+	db = database.Start(config)
 }
 
 func Shutdown() {
+	db.Close()
 }
 
-func HandleRequest(w http.ResponseWriter, r *http.Request) {
-	logging.Info("SAKE", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
-
-	urlPath := r.URL.Path
-	switch {
-	case urlPath == "/SakeStorageServer/StorageServer.asmx":
-		moduleName := "SAKE:Storage:" + r.RemoteAddr
-		handleStorageRequest(moduleName, w, r)
-	case strings.HasSuffix(urlPath, "download.aspx"):
-		moduleName := "SAKE:File:" + r.RemoteAddr
-		handleFileRequest(moduleName, w, r, FileRequestDownload)
-	case strings.HasSuffix(urlPath, "upload.aspx"):
-		moduleName := "SAKE:File:" + r.RemoteAddr
-		handleFileRequest(moduleName, w, r, FileRequestUpload)
-	}
+func RegisterHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("POST /SakeStorageServer/StorageServer.asmx", handleStorageRequest)
+	mux.HandleFunc("GET /SakeFileServer/download.aspx", handleFileDownloadRequest)
+	mux.HandleFunc("POST /SakeFileServer/upload.aspx", handleFileUploadRequest)
+	mux.HandleFunc("GET /SakeFileServer/ghostdownload.aspx", handleMarioKartWiiGhostDownloadRequest)
 }

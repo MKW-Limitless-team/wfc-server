@@ -5,7 +5,7 @@ import (
 	"strconv"
 )
 
-func handleConnectionTest(w http.ResponseWriter) {
+func handleConnectionTest(w http.ResponseWriter, r *http.Request) {
 	response := "\n"
 	response += `            <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">` + "\n"
 	response += `            <html>` + "\n"
@@ -23,5 +23,5 @@ func handleConnectionTest(w http.ResponseWriter) {
 	w.Header().Set("X-Organization", "Nintendo")
 	w.Header().Set("Connection", "Keep-Alive")
 	w.WriteHeader(200)
-	w.Write([]byte(response))
+	_, _ = w.Write([]byte(response))
 }

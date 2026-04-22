@@ -9,35 +9,93 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 	"wwfc/logging"
 
 	"github.com/logrusorgru/aurora/v3"
 )
 
-func downloadStage1(w http.ResponseWriter, stage1Ver int) {
+func downloadStage1(w http.ResponseWriter, r *http.Request) {
+	ver := r.URL.Path[len(r.URL.Path)-1] - '0'
+
 	path := "payload/stage1.bin"
-	if stage1Ver != 0 {
-		path = "payload/stage1v" + strconv.Itoa(stage1Ver) + ".bin"
+	if ver != 0 {
+		path = "payload/stage1v" + strconv.Itoa(int(ver)) + ".bin"
 	}
 	dat, err := os.ReadFile(path)
 	if err != nil {
-		panic(err)
+		if errors.Is(err, os.ErrNotExist) {
+			replyHTTPError(w, http.StatusNotFound, "404 Not Found")
+			return
+		}
+		replyHTTPError(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
 	}
 
 	payload := append([]byte{0x01, 0x2C}, dat...)
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
-	w.Write(payload)
+	_, err = w.Write(payload)
+	if err != nil {
+		logging.Error("NAS", "Error writing stage 1 payload:", err)
+	}
 }
 
-func handlePayloadRequest(moduleName string, w http.ResponseWriter, r *http.Request) {
+func forwardPayloadRequest(w http.ResponseWriter, r *http.Request) {
+	moduleName := getModuleName(r)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	r.URL.Scheme = "http"
+	r.URL.Host = payloadServerAddress
+	r.RequestURI = ""
+	r.Host = payloadServerAddress
+
+	resp, err := client.Do(r)
+	if err != nil {
+		logging.Error(moduleName, "Error forwarding payload request:", err)
+		replyHTTPError(w, http.StatusBadGateway, "502 Bad Gateway")
+		return
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	// Copy the response headers and status code
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	// Copy the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logging.Error(moduleName, "Error reading payload response body:", err)
+		replyHTTPError(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+	_, err = w.Write(body)
+	if err != nil {
+		logging.Error(moduleName, "Error writing payload response body:", err)
+	}
+}
+
+func handlePayloadRequest(w http.ResponseWriter, r *http.Request) {
 	// Example request:
 	// GET /payload?g=RMCPD00&s=4e44b095817f8cfb62e6cffd57e9cfd411004a492784039ea4b2b7ca64717c91&h=9fdb6f60
+
+	moduleName := getModuleName(r)
 
 	u, err := url.Parse(r.URL.String())
 	if err != nil {
@@ -171,5 +229,8 @@ func handlePayloadRequest(moduleName string, w http.ResponseWriter, r *http.Requ
 	dat = append(append(dat[:0x10], signature...), dat[0x110:]...)
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(dat)))
-	w.Write(dat)
+	_, err = w.Write(dat)
+	if err != nil {
+		logging.Error("NAS", "Error writing payload response body:", err)
+	}
 }

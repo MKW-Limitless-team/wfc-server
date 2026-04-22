@@ -1,7 +1,6 @@
 package nas
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
@@ -19,7 +18,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"time"
 	"wwfc/common"
 	"wwfc/logging"
@@ -27,44 +25,26 @@ import (
 	"github.com/logrusorgru/aurora/v3"
 )
 
-// Buffered conn for passing to regular TLS after peeking the client hello
-type bufferedConn struct {
-	r *bufio.Reader
-	net.Conn
-}
-
-func newBufferedConn(c net.Conn) bufferedConn {
-	return bufferedConn{bufio.NewReader(c), c}
-}
-
-func (b bufferedConn) Peek(n int) ([]byte, error) {
-	return b.r.Peek(n)
-}
-
-func (b bufferedConn) Read(p []byte) (int, error) {
-	return b.r.Read(p)
-}
-
 // Bare minimum TLS 1.0 server implementation for the Wii's /dev/net/ssl client
 // Use this with a certificate that exploits the Wii's SSL certificate bug to impersonate naswii.nintendowifi.net
 // See here: https://github.com/shutterbug2000/wii-ssl-bug
 // https://github.com/KaeruTeam/nds-constraint
 
-// Don't use this for anything else, it's not secure
+// Don't use this TLS implementation for anything else, it's not secure
 
-func startHTTPSProxy(config common.Config) {
-	address := *config.NASAddressHTTPS + ":" + config.NASPortHTTPS
-	nasAddr := *config.NASAddress + ":" + config.NASPort
+var (
+	rsaKeyWii            *rsa.PrivateKey
+	serverCertsRecordWii []byte
+	rsaKeyDS             *rsa.PrivateKey
+	serverCertsRecordDS  []byte
+	realTLSConfig        *tls.Config
+)
+
+func setupTLS(config common.Config) {
 	privKeyPath := config.KeyPath
 	certsPath := config.CertPath
 	exploitWii := *config.EnableHTTPSExploitWii
 	exploitDS := *config.EnableHTTPSExploitDS
-
-	logging.Notice("NAS-TLS", "Starting HTTPS server on", aurora.BrightCyan(address))
-	l, err := net.Listen("tcp", address)
-	if err != nil {
-		panic(err)
-	}
 
 	setupRealTLS(privKeyPath, certsPath)
 	// Reread the private key and certs on a regular interval
@@ -75,260 +55,394 @@ func startHTTPSProxy(config common.Config) {
 		}
 	}()
 
-	if !(exploitWii || exploitDS) {
-		// Only handle real TLS requests
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				panic(err)
-			}
-
-			go func() {
-				moduleName := "NAS-TLS:" + conn.RemoteAddr().String()
-
-				conn.SetDeadline(time.Now().UTC().Add(25 * time.Second))
-
-				handleRealTLS(moduleName, conn, nasAddr)
-			}()
-		}
-	}
-
 	// Handle requests from Wii, DS and regular TLS
-	var rsaKeyWii *rsa.PrivateKey
-	var serverCertsRecordWii []byte
+
 	if exploitWii {
-		certWii, err := os.ReadFile(config.CertPathWii)
-		if err != nil {
-			panic(err)
-		}
-
-		rsaDataWii, err := os.ReadFile(config.KeyPathWii)
-		if err != nil {
-			panic(err)
-		}
-
-		rsaBlockWii, _ := pem.Decode(rsaDataWii)
-		parsedKeyWii, err := x509.ParsePKCS8PrivateKey(rsaBlockWii.Bytes)
-		if err != nil {
-			panic(err)
-		}
-
-		var ok bool
-		rsaKeyWii, ok = parsedKeyWii.(*rsa.PrivateKey)
-		if !ok {
-			panic("unexpected key type")
-		}
-
-		serverCertsRecordWii = []byte{0x16, 0x03, 0x01}
-
-		// Length of the record
-		certLenWii := uint32(len(certWii))
-		serverCertsRecordWii = append(serverCertsRecordWii, []byte{
-			byte((certLenWii + 10) >> 8),
-			byte(certLenWii + 10),
-		}...)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, 0xB)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, []byte{
-			byte((certLenWii + 6) >> 16),
-			byte((certLenWii + 6) >> 8),
-			byte(certLenWii + 6),
-		}...)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, []byte{
-			byte((certLenWii + 3) >> 16),
-			byte((certLenWii + 3) >> 8),
-			byte(certLenWii + 3),
-		}...)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, []byte{
-			byte(certLenWii >> 16),
-			byte(certLenWii >> 8),
-			byte(certLenWii),
-		}...)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, certWii...)
-
-		serverCertsRecordWii = append(serverCertsRecordWii, []byte{
-			0x16, 0x03, 0x01, 0x00, 0x04, 0x0E, 0x00, 0x00, 0x00,
-		}...)
+		setupExploitWii(config)
 	}
 
-	var rsaKeyDS *rsa.PrivateKey
-	var serverCertsRecordDS []byte
 	if exploitDS {
-		certDS, err := os.ReadFile(config.CertPathDS)
-		if err != nil {
-			panic(err)
-		}
-
-		rsaDataDS, err := os.ReadFile(config.KeyPathDS)
-		if err != nil {
-			panic(err)
-		}
-
-		rsaBlockDS, _ := pem.Decode(rsaDataDS)
-		parsedKeyDS, err := x509.ParsePKCS8PrivateKey(rsaBlockDS.Bytes)
-		if err != nil {
-			panic(err)
-		}
-
-		var ok bool
-		rsaKeyDS, ok = parsedKeyDS.(*rsa.PrivateKey)
-		if !ok {
-			panic("unexpected key type")
-		}
-
-		wiiCertDS, err := os.ReadFile(config.WiiCertPathDS)
-		if err != nil {
-			panic(err)
-		}
-
-		serverCertsRecordDS = []byte{0x16, 0x03, 0x00}
-
-		// Length of the record
-		certLenDS := uint32(len(certDS))
-		wiiCertLenDS := uint32(len(wiiCertDS))
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			byte((certLenDS + wiiCertLenDS + 13) >> 8),
-			byte(certLenDS + wiiCertLenDS + 13),
-		}...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, 0xB)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			byte((certLenDS + wiiCertLenDS + 9) >> 16),
-			byte((certLenDS + wiiCertLenDS + 9) >> 8),
-			byte(certLenDS + wiiCertLenDS + 9),
-		}...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			byte((certLenDS + wiiCertLenDS + 6) >> 16),
-			byte((certLenDS + wiiCertLenDS + 6) >> 8),
-			byte(certLenDS + wiiCertLenDS + 6),
-		}...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			byte(certLenDS >> 16),
-			byte(certLenDS >> 8),
-			byte(certLenDS),
-		}...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, certDS...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			byte(wiiCertLenDS >> 16),
-			byte(wiiCertLenDS >> 8),
-			byte(wiiCertLenDS),
-		}...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, wiiCertDS...)
-
-		serverCertsRecordDS = append(serverCertsRecordDS, []byte{
-			0x16, 0x03, 0x00, 0x00, 0x04, 0x0E, 0x00, 0x00, 0x00,
-		}...)
-	}
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			panic(err)
-		}
-
-		go func() {
-			// logging.Info("NAS-TLS", "Receiving HTTPS request from", aurora.BrightCyan(conn.RemoteAddr()))
-
-			moduleName := "NAS-TLS:" + conn.RemoteAddr().String()
-
-			conn.SetDeadline(time.Now().UTC().Add(5 * time.Second))
-
-			handleTLS(moduleName, conn, nasAddr, serverCertsRecordWii, rsaKeyWii, serverCertsRecordDS, rsaKeyDS)
-		}()
+		setupExploitDS(config)
 	}
 }
 
-// handleTLS handles the TLS request from the Wii or the DS. It may call handleRealTLS if the request is from a modern web browser.
-func handleTLS(moduleName string, rawConn net.Conn, nasAddr string, serverCertsRecordWii []byte, rsaKeyWii *rsa.PrivateKey, serverCertsRecordDS []byte, rsaKeyDS *rsa.PrivateKey) {
-	// Recover from panics
+func setupRealTLS(privKeyPath string, certsPath string) {
+	// Read server key and certs
+
+	serverKey, err := os.ReadFile(privKeyPath)
+	if err != nil {
+		logging.Error("NAS-TLS", "Failed to read server key:", err)
+		return
+	}
+
+	serverCerts, err := os.ReadFile(certsPath)
+	if err != nil {
+		logging.Error("NAS-TLS", "Failed to read server certs:", err)
+		return
+	}
+
+	cert, err := tls.X509KeyPair(serverCerts, serverKey)
+	if err != nil {
+		logging.Error("NAS-TLS", "Failed to parse server certs:", err)
+		return
+	}
+
+	config := tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+
+	realTLSConfig = &config
+}
+
+func setupExploitWii(config common.Config) {
+	certWii, err := os.ReadFile(config.CertPathWii)
+	if err != nil {
+		panic(err)
+	}
+
+	rsaDataWii, err := os.ReadFile(config.KeyPathWii)
+	if err != nil {
+		panic(err)
+	}
+
+	rsaBlockWii, _ := pem.Decode(rsaDataWii)
+	parsedKeyWii, err := x509.ParsePKCS8PrivateKey(rsaBlockWii.Bytes)
+	if err != nil {
+		panic(err)
+	}
+
+	var ok bool
+	rsaKeyWii, ok = parsedKeyWii.(*rsa.PrivateKey)
+	if !ok {
+		panic("unexpected key type")
+	}
+
+	serverCertsRecordWii = []byte{0x16, 0x03, 0x01}
+
+	// Length of the record
+	certLenWii := uint32(len(certWii))
+	serverCertsRecordWii = append(serverCertsRecordWii, []byte{
+		byte((certLenWii + 10) >> 8),
+		byte(certLenWii + 10),
+	}...)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, 0xB)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, []byte{
+		byte((certLenWii + 6) >> 16),
+		byte((certLenWii + 6) >> 8),
+		byte(certLenWii + 6),
+	}...)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, []byte{
+		byte((certLenWii + 3) >> 16),
+		byte((certLenWii + 3) >> 8),
+		byte(certLenWii + 3),
+	}...)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, []byte{
+		byte(certLenWii >> 16),
+		byte(certLenWii >> 8),
+		byte(certLenWii),
+	}...)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, certWii...)
+
+	serverCertsRecordWii = append(serverCertsRecordWii, []byte{
+		0x16, 0x03, 0x01, 0x00, 0x04, 0x0E, 0x00, 0x00, 0x00,
+	}...)
+}
+
+func setupExploitDS(config common.Config) {
+	certDS, err := os.ReadFile(config.CertPathDS)
+	if err != nil {
+		panic(err)
+	}
+
+	rsaDataDS, err := os.ReadFile(config.KeyPathDS)
+	if err != nil {
+		panic(err)
+	}
+
+	rsaBlockDS, _ := pem.Decode(rsaDataDS)
+	parsedKeyDS, err := x509.ParsePKCS8PrivateKey(rsaBlockDS.Bytes)
+	if err != nil {
+		panic(err)
+	}
+
+	var ok bool
+	rsaKeyDS, ok = parsedKeyDS.(*rsa.PrivateKey)
+	if !ok {
+		panic("unexpected key type")
+	}
+
+	wiiCertDS, err := os.ReadFile(config.WiiCertPathDS)
+	if err != nil {
+		panic(err)
+	}
+
+	serverCertsRecordDS = []byte{0x16, 0x03, 0x00}
+
+	// Length of the record
+	certLenDS := uint32(len(certDS))
+	wiiCertLenDS := uint32(len(wiiCertDS))
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		byte((certLenDS + wiiCertLenDS + 13) >> 8),
+		byte(certLenDS + wiiCertLenDS + 13),
+	}...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, 0xB)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		byte((certLenDS + wiiCertLenDS + 9) >> 16),
+		byte((certLenDS + wiiCertLenDS + 9) >> 8),
+		byte(certLenDS + wiiCertLenDS + 9),
+	}...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		byte((certLenDS + wiiCertLenDS + 6) >> 16),
+		byte((certLenDS + wiiCertLenDS + 6) >> 8),
+		byte(certLenDS + wiiCertLenDS + 6),
+	}...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		byte(certLenDS >> 16),
+		byte(certLenDS >> 8),
+		byte(certLenDS),
+	}...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, certDS...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		byte(wiiCertLenDS >> 16),
+		byte(wiiCertLenDS >> 8),
+		byte(wiiCertLenDS),
+	}...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, wiiCertDS...)
+
+	serverCertsRecordDS = append(serverCertsRecordDS, []byte{
+		0x16, 0x03, 0x00, 0x00, 0x04, 0x0E, 0x00, 0x00, 0x00,
+	}...)
+}
+
+type tlsConnection struct {
+	net.Conn
+	handshake bool
+	tlsConn   io.ReadWriter
+}
+
+func (c *tlsConnection) Read(b []byte) (int, error) {
+	if !c.handshake {
+		if err := c.handleTLSHandshake(); err != nil {
+			return 0, err
+		}
+	}
+
+	return c.tlsConn.Read(b)
+}
+
+func (c *tlsConnection) Write(b []byte) (int, error) {
+	if !c.handshake {
+		if err := c.handleTLSHandshake(); err != nil {
+			return 0, err
+		}
+	}
+
+	return c.tlsConn.Write(b)
+}
+
+func (c *tlsConnection) Close() error {
+	if c.tlsConn != nil {
+		if tlsConn, ok := c.tlsConn.(*tls.Conn); ok {
+			return tlsConn.Close()
+		}
+	}
+	return c.Conn.Close()
+}
+
+var (
+	dsClientHelloPrefix = []byte{
+		0x16, 0x03, 0x00, 0x00, 0x2F, 0x01, 0x00, 0x00, 0x2B, 0x03, 0x00,
+	}
+	wiiClientHelloPrefix = []byte{
+		0x80, 0x2B, 0x01, 0x03, 0x01, 0x00, 0x12, 0x00, 0x00, 0x00, 0x10, 0x00,
+		0x00, 0x35, 0x00, 0x00, 0x2F, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x09, 0x00,
+		0x00, 0x05, 0x00, 0x00, 0x04,
+	}
+)
+
+// handleTLSHandshake handles the TLS request from the Wii or the DS, and creates tlsConn for further communication.
+// It may call handleRealTLS if the request is from a modern web browser.
+func (c *tlsConnection) handleTLSHandshake() (err error) {
+	moduleName := "NAS-TLS:" + c.Conn.RemoteAddr().String()
+
+	// Recover from panics. TODO: is this really necessary?
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Error(moduleName, "Panic:", r)
+			err = errors.New("panic occurred during TLS handshake")
 		}
 	}()
 
-	conn := newBufferedConn(rawConn)
-
-	defer conn.Close()
+	if rsaKeyDS == nil && rsaKeyWii == nil {
+		// Only handle real TLS connections
+		return c.handleRealTLSHandshake(c.Conn)
+	}
 
 	// Read client hello
-	// fmt.Printf("Client Hello:\n")
-	var helloBytes []byte
-	if rsaKeyWii != nil {
-		index := 0
-		for index = 0; index < 0x1D; index++ {
-			var err error
-			helloBytes, err = conn.Peek(index + 1)
-			if err != nil {
-				logging.Error(moduleName, "Failed to peek from client:", err)
-				return
-			}
-
-			if helloBytes[index] != []byte{
-				0x80, 0x2B, 0x01, 0x03, 0x01, 0x00, 0x12, 0x00, 0x00, 0x00, 0x10, 0x00,
-				0x00, 0x35, 0x00, 0x00, 0x2F, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x09, 0x00,
-				0x00, 0x05, 0x00, 0x00, 0x04,
-			}[index] {
-				break
-			}
-		}
-		if index == 0x1D {
-			macFn, cipher, clientCipher, err := handleWiiTLSHandshake(moduleName, conn, serverCertsRecordWii, rsaKeyWii)
-			if err == nil && macFn != nil && cipher != nil && clientCipher != nil {
-				proxyConsoleTLS(moduleName, conn, nasAddr, VersionTLS10, macFn, cipher, clientCipher)
-			}
-			return
-		}
-	}
-
+	var peekMatchWii, peekMatchDS bool
+	consumed := []byte{}
 	if rsaKeyDS != nil {
-		index := 0
-		for index = 0; index < 0x0B; index++ {
-			var err error
-			helloBytes, err = conn.Peek(index + 1)
-			if err != nil {
-				logging.Error(moduleName, "Failed to peek from client:", err)
-				return
-			}
-
-			if helloBytes[index] != []byte{
-				0x16, 0x03, 0x00, 0x00, 0x2F, 0x01, 0x00, 0x00, 0x2B, 0x03, 0x00,
-			}[index] {
-				break
-			}
-		}
-		if index == 0x0B {
-			macFn, cipher, clientCipher, err := handleDSSSLHandshake(moduleName, conn, serverCertsRecordDS, rsaKeyDS)
-			if err == nil && macFn != nil && cipher != nil && clientCipher != nil {
-				proxyConsoleTLS(moduleName, conn, nasAddr, VersionSSL30, macFn, cipher, clientCipher)
-			}
-			return
-		}
+		consumed, err = readBytes(c.Conn, dsClientHelloPrefix, consumed)
+		peekMatchDS = err == nil
 	}
 
-	conn.SetDeadline(time.Now().UTC().Add(25 * time.Second))
+	if rsaKeyWii != nil && err == errUnexpectedBytes {
+		consumed, err = readBytes(c.Conn, wiiClientHelloPrefix, consumed)
+		peekMatchWii = err == nil
+	}
 
-	// logging.Info(moduleName, "Forwarding client hello:", aurora.Cyan(fmt.Sprintf("% X ", helloBytes)))
-	handleRealTLS(moduleName, conn, nasAddr)
+	if err != nil && err != errUnexpectedBytes {
+		return err
+	}
+
+	var macFn macFunction
+	var cipher, clientCipher *rc4.Cipher
+	var version uint16
+	switch {
+	case peekMatchWii:
+		macFn, cipher, clientCipher, err = handleWiiTLSHandshake(moduleName, c.Conn)
+		version = VersionTLS10
+	case peekMatchDS:
+		macFn, cipher, clientCipher, err = handleDSSSLHandshake(moduleName, c.Conn)
+		version = VersionSSL30
+
+	case err == errUnexpectedBytes:
+		return c.handleRealTLSHandshake(nasInConn{
+			Conn: c.Conn,
+			in:   io.MultiReader(bytes.NewReader(consumed), c.Conn),
+		})
+	}
+
+	if err != nil {
+		return err
+	}
+	if macFn == nil || cipher == nil || clientCipher == nil {
+		return errors.New("invalid TLS handshake result")
+	}
+
+	c.tlsConn = &consoleTLSConn{
+		Conn:         c.Conn,
+		MacFn:        macFn,
+		Cipher:       cipher,
+		ClientCipher: clientCipher,
+		Version:      version,
+		Seq:          1,
+	}
+	c.handshake = true
+	return nil
 }
 
-func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsRecord []byte, rsaKey *rsa.PrivateKey) (macFn macFunction, cipher *rc4.Cipher, clientCipher *rc4.Cipher, err error) {
-	// fmt.Printf("\n")
+// handleRealTLSHandshake handles the TLS request handshake legitimately using crypto/tls, and creates tlsConn
+func (c *tlsConnection) handleRealTLSHandshake(rawConn net.Conn) error {
+	if realTLSConfig == nil {
+		return errors.New("realTLSConfig is not set")
+	}
 
-	clientHello := make([]byte, 0x2D)
-	_, err = io.ReadFull(conn.r, clientHello)
+	tlsConn := tls.Server(rawConn, realTLSConfig)
+
+	err := tlsConn.Handshake()
 	if err != nil {
-		logging.Error(moduleName, "Failed to read from client:", err)
+		_ = tlsConn.Close()
+		return err
+	}
+	c.tlsConn = tlsConn
+	c.handshake = true
+	return nil
+}
+
+type consoleTLSConn struct {
+	net.Conn
+	BufferSize    int
+	MacFn         macFunction
+	Cipher        *rc4.Cipher
+	ClientCipher  *rc4.Cipher
+	Version       uint16
+	Seq           uint64
+	decodedBuffer bytes.Buffer
+	encodedBuffer bytes.Buffer
+}
+
+func (c *consoleTLSConn) Read(b []byte) (n int, err error) {
+	if c.decodedBuffer.Len() != 0 {
+		return c.decodedBuffer.Read(b)
+	}
+
+	recordLength := uint16(0)
+	for {
+		for c.encodedBuffer.Len() < int(recordLength)+5 {
+			readBuf := make([]byte, 1024)
+			n, err = c.Conn.Read(readBuf)
+			if err != nil {
+				return 0, err
+			}
+			c.encodedBuffer.Write(readBuf[:n])
+		}
+
+		buf := c.encodedBuffer.Bytes()
+		if buf[0] < 0x15 || buf[0] > 0x17 {
+			return 0, errors.New("invalid record type")
+		}
+
+		if buf[1] != 0x03 || (c.Version == VersionTLS10 && buf[2] != 0x01) || (c.Version == VersionSSL30 && buf[2] != 0x00) {
+			return 0, errors.New("invalid TLS version")
+		}
+
+		recordLength = binary.BigEndian.Uint16(buf[3:5])
+		if recordLength < 17 || (recordLength+5) > 0x1000 {
+			return 0, errors.New("invalid record length")
+		}
+
+		if c.encodedBuffer.Len() >= int(recordLength)+5 {
+			break
+		}
+	}
+
+	buf := c.encodedBuffer.Bytes()
+	// Decrypt content
+	c.ClientCipher.XORKeyStream(buf[5:5+recordLength], buf[5:5+recordLength])
+
+	if buf[0] != 0x17 {
+		if buf[0] == 0x15 || buf[5] == 0x01 || buf[6] == 0x00 {
+			// Alert: connection closed
+			if err = c.Close(); err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
+		}
+		return 0, errors.New("non-application data received")
+	}
+	// Write the decrypted content to the buffer
+	if int(recordLength-16) > len(b) {
+		c.decodedBuffer.Write(buf[5+len(b) : 5+recordLength-16])
+	}
+	c.encodedBuffer.Next(5 + int(recordLength))
+
+	return copy(b, buf[5:5+recordLength-16]), nil
+}
+
+func (c *consoleTLSConn) Write(b []byte) (n int, err error) {
+	var record []byte
+	record, c.Seq = encryptTLS(c.MacFn, c.Cipher, b, c.Seq, []byte{0x17, 0x03, 0x01, byte(len(b) >> 8), byte(len(b))})
+	return c.Conn.Write(record)
+}
+
+func handleWiiTLSHandshake(moduleName string, conn io.ReadWriter) (macFn macFunction, cipher *rc4.Cipher, clientCipher *rc4.Cipher, err error) {
+	clientHello := append(wiiClientHelloPrefix, make([]byte, 0x2D-len(wiiClientHelloPrefix))...)
+	_, err = io.ReadFull(conn, clientHello[len(wiiClientHelloPrefix):])
+	if err != nil {
+		logging.Error(moduleName, "Failed to read client hello:", err)
 		return
 	}
 
@@ -358,13 +472,11 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 	}...)
 
 	// Append the certs record to the server hello buffer
-	serverHello = append(serverHello, serverCertsRecord...)
-
-	// fmt.Printf("Server Hello:\n% X\n", serverHello)
+	serverHello = append(serverHello, serverCertsRecordWii...)
 
 	finishHash.Write(serverHello[0x5:0x2F])
-	finishHash.Write(serverHello[0x34 : 0x34+(len(serverCertsRecord)-14)])
-	finishHash.Write(serverHello[0x34+(len(serverCertsRecord)-14)+5 : 0x34+(len(serverCertsRecord)-14)+5+4])
+	finishHash.Write(serverHello[0x34 : 0x34+(len(serverCertsRecordWii)-14)])
+	finishHash.Write(serverHello[0x34+(len(serverCertsRecordWii)-14)+5 : 0x34+(len(serverCertsRecordWii)-14)+5+4])
 
 	_, err = conn.Write(serverHello)
 	if err != nil {
@@ -372,7 +484,6 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 		return
 	}
 
-	// fmt.Printf("Client key exchange:\n")
 	buf := make([]byte, 0x1000)
 	index := 0
 	// Read client key exchange (+ change cipher spec + finished)
@@ -380,11 +491,10 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 		var n int
 		n, err = conn.Read(buf[index:])
 		if err != nil {
-			logging.Error(moduleName, "Failed to read from client:", err)
+			logging.Error(moduleName, "Failed to read client key exchange:", err)
 			return
 		}
 
-		// fmt.Printf("% X ", buf[index:index+n])
 		index += n
 
 		// Check client key exchange header
@@ -418,7 +528,6 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 			return
 		}
 	}
-	// fmt.Printf("\n")
 
 	encryptedPreMasterSecret := buf[0x0B : 0x0B+0x80]
 	clientFinish := buf[0x96 : 0x96+0x20]
@@ -426,13 +535,12 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 	finishHash.Write(buf[0x5 : 0x5+0x86])
 
 	// Decrypt the pre master secret using our RSA key
-	preMasterSecret, err := rsa.DecryptPKCS1v15(rand.Reader, rsaKey, encryptedPreMasterSecret)
+	var preMasterSecret []byte
+	preMasterSecret, err = rsa.DecryptPKCS1v15(rand.Reader, rsaKeyWii, encryptedPreMasterSecret)
 	if err != nil {
 		logging.Error(moduleName, "Failed to decrypt pre master secret:", err)
 		return
 	}
-
-	// fmt.Printf("Pre master secret:\n% X\n", preMasterSecret)
 
 	if len(preMasterSecret) != 48 {
 		logging.Error(moduleName, "Invalid pre master secret length:", aurora.BrightCyan(len(preMasterSecret)))
@@ -451,16 +559,7 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 	masterSecret := make([]byte, 48)
 	prf10(masterSecret, preMasterSecret, []byte("master secret"), clientServerRandom)
 
-	// fmt.Printf("Master secret:\n% X\n", masterSecret)
-
 	_, serverMAC, clientKey, serverKey, _, _ := keysFromMasterSecret(VersionTLS10, masterSecret, clientRandom, serverRandom, 16, 16, 16)
-
-	// fmt.Printf("Client MAC:\n% X\n", clientMAC)
-	// fmt.Printf("Server MAC:\n% X\n", serverMAC)
-	// fmt.Printf("Client key:\n% X\n", clientKey)
-	// fmt.Printf("Server key:\n% X\n", serverKey)
-	// fmt.Printf("Client IV:\n% X\n", clientIV)
-	// fmt.Printf("Server IV:\n% X\n", serverIV)
 
 	// Create the server RC4 cipher
 	cipher, err = rc4.NewCipher(serverKey)
@@ -481,12 +580,10 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 	clientCipher.XORKeyStream(clientFinish, clientFinish)
 	finishHash.Write(clientFinish[:0x10])
 
-	// fmt.Printf("Client Finish:\n% X\n", clientFinish)
-
 	// Send ChangeCipherSpec
 	_, err = conn.Write([]byte{0x14, 0x03, 0x01, 0x00, 0x01, 0x01})
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	finishedRecord := []byte{0x16, 0x03, 0x01, 0x00, 0x10}
@@ -501,11 +598,11 @@ func handleWiiTLSHandshake(moduleName string, conn bufferedConn, serverCertsReco
 	return
 }
 
-func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecord []byte, rsaKey *rsa.PrivateKey) (macFn macFunction, cipher *rc4.Cipher, clientCipher *rc4.Cipher, err error) {
-	clientHello := make([]byte, 0x34)
-	_, err = io.ReadFull(conn.r, clientHello)
+func handleDSSSLHandshake(moduleName string, conn io.ReadWriter) (macFn macFunction, cipher *rc4.Cipher, clientCipher *rc4.Cipher, err error) {
+	clientHello := append(dsClientHelloPrefix, make([]byte, 0x34-len(dsClientHelloPrefix))...)
+	_, err = io.ReadFull(conn, clientHello[len(dsClientHelloPrefix):])
 	if err != nil {
-		logging.Error(moduleName, "Failed to read from client:", err)
+		logging.Error(moduleName, "Failed to read client hello:", err)
 		return
 	}
 
@@ -534,13 +631,11 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 	}...)
 
 	// Append the certs record to the server hello buffer
-	serverHello = append(serverHello, serverCertsRecord...)
-
-	// fmt.Printf("Server Hello:\n% X\n", serverHello)
+	serverHello = append(serverHello, serverCertsRecordDS...)
 
 	finishHash.Write(serverHello[0x5:0x2F])
-	finishHash.Write(serverHello[0x34 : 0x34+(len(serverCertsRecord)-14)])
-	finishHash.Write(serverHello[0x34+(len(serverCertsRecord)-14)+5 : 0x34+(len(serverCertsRecord)-14)+5+4])
+	finishHash.Write(serverHello[0x34 : 0x34+(len(serverCertsRecordDS)-14)])
+	finishHash.Write(serverHello[0x34+(len(serverCertsRecordDS)-14)+5 : 0x34+(len(serverCertsRecordDS)-14)+5+4])
 
 	_, err = conn.Write(serverHello)
 	if err != nil {
@@ -548,7 +643,6 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 		return
 	}
 
-	// fmt.Printf("Client key exchange:\n")
 	buf := make([]byte, 0x1000)
 	index := 0
 	// Read client key exchange (+ change cipher spec + finished)
@@ -556,11 +650,10 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 		var n int
 		n, err = conn.Read(buf[index:])
 		if err != nil {
-			logging.Error(moduleName, "Failed to read from client:", err)
+			logging.Error(moduleName, "Failed to read client key exchange:", err)
 			return
 		}
 
-		// fmt.Printf("% X ", buf[index:index+n])
 		index += n
 
 		// Check client key exchange header
@@ -594,7 +687,6 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 			return
 		}
 	}
-	// fmt.Printf("\n")
 
 	encryptedPreMasterSecret := buf[0x09 : 0x09+0x80]
 	clientFinish := buf[0x94 : 0x94+0x38]
@@ -602,13 +694,12 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 	finishHash.Write(buf[0x5 : 0x5+0x84])
 
 	// Decrypt the pre master secret using our RSA key
-	preMasterSecret, err := rsa.DecryptPKCS1v15(rand.Reader, rsaKey, encryptedPreMasterSecret)
+	var preMasterSecret []byte
+	preMasterSecret, err = rsa.DecryptPKCS1v15(rand.Reader, rsaKeyDS, encryptedPreMasterSecret)
 	if err != nil {
 		logging.Error(moduleName, "Failed to decrypt pre master secret:", err)
 		return
 	}
-
-	// fmt.Printf("Pre master secret:\n% X\n", preMasterSecret)
 
 	if len(preMasterSecret) != 48 {
 		logging.Error(moduleName, "Invalid pre master secret length:", aurora.BrightCyan(len(preMasterSecret)))
@@ -627,16 +718,7 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 	masterSecret := make([]byte, 48)
 	prf30(masterSecret, preMasterSecret, []byte("master secret"), clientServerRandom)
 
-	// fmt.Printf("Master secret:\n% X\n", masterSecret)
-
 	_, serverMAC, clientKey, serverKey, _, _ := keysFromMasterSecret(VersionSSL30, masterSecret, clientRandom, serverRandom, 16, 16, 16)
-
-	// fmt.Printf("Client MAC:\n% X\n", clientMAC)
-	// fmt.Printf("Server MAC:\n% X\n", serverMAC)
-	// fmt.Printf("Client key:\n% X\n", clientKey)
-	// fmt.Printf("Server key:\n% X\n", serverKey)
-	// fmt.Printf("Client IV:\n% X\n", clientIV)
-	// fmt.Printf("Server IV:\n% X\n", serverIV)
 
 	// Create the server RC4 cipher
 	cipher, err = rc4.NewCipher(serverKey)
@@ -657,12 +739,10 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 	clientCipher.XORKeyStream(clientFinish, clientFinish)
 	finishHash.Write(clientFinish[:0x28])
 
-	// fmt.Printf("Client Finish:\n% X\n", clientFinish)
-
 	// Send ChangeCipherSpec
 	_, err = conn.Write([]byte{0x14, 0x03, 0x00, 0x00, 0x01, 0x01})
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	finishedRecord := []byte{0x16, 0x03, 0x00, 0x00, 0x28}
@@ -677,205 +757,24 @@ func handleDSSSLHandshake(moduleName string, conn bufferedConn, serverCertsRecor
 	return
 }
 
-func proxyConsoleTLS(moduleName string, conn bufferedConn, nasAddr string, version uint16, macFn macFunction, cipher *rc4.Cipher, clientCipher *rc4.Cipher) {
-	// Open a connection to NAS
-	newConn, err := net.Dial("tcp", nasAddr)
-	if err != nil {
-		panic(err)
-	}
+var errUnexpectedBytes = errors.New("unexpected bytes")
 
-	defer newConn.Close()
+func readBytes(r io.Reader, expected []byte, consumed []byte) ([]byte, error) {
+	index := len(consumed)
+	buf := make([]byte, len(expected))
+	copy(buf, consumed)
 
-	// Read bytes from the HTTP server and forward them through the TLS connection
-	go func() {
-		recvBuf := make([]byte, 0x100)
-
-		seq := uint64(1)
-		for {
-			n, err := newConn.Read(recvBuf)
-			if err != nil {
-				if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "use of closed network connection") {
-					return
-				}
-
-				logging.Error(moduleName, "Failed to read from HTTP server:", err)
-				return
-			}
-
-			// fmt.Printf("Sent:\n% X ", recvBuf[:n])
-			var record []byte
-			record, seq = encryptTLS(macFn, cipher, recvBuf[:n], seq, []byte{0x17, 0x03, 0x01, byte(n >> 8), byte(n)})
-
-			_, err = conn.Write(record)
-			if err != nil {
-				logging.Error(moduleName, "Failed to write to client:", err)
-				return
-			}
-		}
-	}()
-
-	// Read encrypted content from the client and forward it to the HTTP server
-	index := 0
-	total := 0
-	buf := make([]byte, 0x1000)
-	for {
-		n, err := conn.Read(buf[index:])
+	for index < len(expected) {
+		n, err := r.Read(buf[index:])
 		if err != nil {
-			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "use of closed network connection") {
-				logging.Info(moduleName, "Connection closed by client after", aurora.BrightCyan(total), "bytes")
-				return
-			}
-
-			logging.Error(moduleName, "Failed to read from client:", err)
-			return
+			return buf[:index+n], err
 		}
-
-		// fmt.Printf("Received:\n% X ", buf[index:index+n])
+		if !bytes.Equal(buf[index:index+n], expected[index:index+n]) {
+			return buf[:index+n], errUnexpectedBytes
+		}
 		index += n
-		total += n
-
-		for {
-			if index < 5 {
-				break
-			}
-
-			if buf[0] < 0x15 || buf[0] > 0x17 {
-				logging.Error(moduleName, "Invalid record type")
-				return
-			}
-
-			if buf[1] != 0x03 || (version == VersionTLS10 && buf[2] != 0x01) || (version == VersionSSL30 && buf[2] != 0x00) {
-				logging.Error(moduleName, "Invalid TLS version")
-				return
-			}
-
-			recordLength := binary.BigEndian.Uint16(buf[3:5])
-			if recordLength < 17 || (recordLength+5) > 0x1000 {
-				logging.Error(moduleName, "Invalid record length")
-				return
-			}
-
-			if index < int(recordLength)+5 {
-				break
-			}
-
-			// Decrypt content
-			clientCipher.XORKeyStream(buf[5:5+recordLength], buf[5:5+recordLength])
-			// fmt.Printf("\nDecrypted content:\n% X \n", buf[5:5+recordLength])
-
-			if buf[0] != 0x17 {
-				if buf[0] == 0x15 || buf[5] == 0x01 || buf[6] == 0x00 {
-					logging.Info(moduleName, "Alert connection close by client after", aurora.BrightCyan(total), "bytes")
-					return
-				}
-
-				logging.Error(moduleName, "Non-application data received:", aurora.Cyan(fmt.Sprintf("% X ", buf[:5+recordLength])))
-				return
-			} else {
-				// Send the decrypted content to the HTTP server
-				_, err = newConn.Write(buf[5 : 5+recordLength-16])
-				if err != nil {
-					logging.Error(moduleName, "Failed to write to HTTP server:", err)
-					return
-				}
-			}
-
-			buf = buf[5+recordLength:]
-			buf = append(buf, make([]byte, 0x1000-len(buf))...)
-			index -= 5 + int(recordLength)
-		}
 	}
-}
-
-var realTLSConfig *tls.Config
-
-func setupRealTLS(privKeyPath string, certsPath string) {
-	// Read server key and certs
-
-	serverKey, err := os.ReadFile(privKeyPath)
-	if err != nil {
-		logging.Error("NAS-TLS", "Failed to read server key:", err)
-		return
-	}
-
-	serverCerts, err := os.ReadFile(certsPath)
-	if err != nil {
-		logging.Error("NAS-TLS", "Failed to read server certs:", err)
-		return
-	}
-
-	cert, err := tls.X509KeyPair(serverCerts, serverKey)
-	if err != nil {
-		logging.Error("NAS-TLS", "Failed to parse server certs:", err)
-		return
-	}
-
-	config := tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}
-
-	realTLSConfig = &config
-}
-
-// handleRealTLS handles the TLS request legitimately using crypto/tls
-func handleRealTLS(moduleName string, conn net.Conn, nasAddr string) {
-	// Recover from panics
-	defer func() {
-		if r := recover(); r != nil {
-			logging.Error(moduleName, "Panic:", r)
-		}
-	}()
-
-	if realTLSConfig == nil {
-		return
-	}
-
-	tlsConn := tls.Server(conn, realTLSConfig)
-
-	err := tlsConn.Handshake()
-	if err != nil {
-		return
-	}
-
-	newConn, err := net.Dial("tcp", nasAddr)
-	if err != nil {
-		panic(err)
-	}
-
-	defer newConn.Close()
-
-	// Read bytes from the HTTP server and forward them through the TLS connection
-	go func() {
-		recvBuf := make([]byte, 0x100)
-
-		for {
-			n, err := newConn.Read(recvBuf)
-			if err != nil {
-				return
-			}
-
-			_, err = tlsConn.Write(recvBuf[:n])
-			if err != nil {
-				logging.Error(moduleName, "Failed to write to client:", err)
-				return
-			}
-		}
-	}()
-
-	// Read encrypted content from the client and forward it to the HTTP server
-	buf := make([]byte, 0x1000)
-	for {
-		n, err := tlsConn.Read(buf)
-		if err != nil {
-			return
-		}
-
-		_, err = newConn.Write(buf[:n])
-		if err != nil {
-			logging.Error(moduleName, "Failed to write to HTTP server:", err)
-			return
-		}
-	}
+	return buf, nil
 }
 
 // The following functions are modified from the crypto standard library
@@ -1041,8 +940,6 @@ type finishedHash struct {
 }
 
 func (h *finishedHash) Write(msg []byte) int {
-	// fmt.Printf("Write finished hash: % X\n", msg)
-
 	h.client.Write(msg)
 	h.server.Write(msg)
 

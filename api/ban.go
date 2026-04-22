@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-	"wwfc/database"
 	"wwfc/gpcm"
 	"wwfc/logging"
 
@@ -18,14 +17,15 @@ func HandleBan(w http.ResponseWriter, r *http.Request) {
 	var err string
 	var statusCode int
 
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		success, err, statusCode = handleBanImpl(r)
-	} else if r.Method == http.MethodOptions {
+	case http.MethodOptions:
 		statusCode = http.StatusNoContent
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	} else {
-		err = "Incorrect request. POST only."
+	default:
+		err = "incorrect request. POST only."
 		statusCode = http.StatusMethodNotAllowed
 		w.Header().Set("Allow", "POST")
 	}
@@ -47,7 +47,7 @@ func HandleBan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
 
 	w.WriteHeader(statusCode)
-	w.Write(jsonData)
+	_, _ = w.Write(jsonData)
 }
 
 type BanRequestSpec struct {
@@ -102,11 +102,20 @@ func handleBanImpl(r *http.Request) (bool, string, int) {
 
 	logging.Notice("API:"+moderator, "Ban profile:", aurora.Cyan(req.ProfileID), "TOS:", aurora.Cyan(req.Tos), "Length:", aurora.Cyan(length), "Reason:", aurora.BrightCyan(req.Reason), "Reason (Hidden):", aurora.BrightCyan(req.ReasonHidden))
 
-	if !database.BanUser(pool, ctx, req.ProfileID, req.Tos, length, req.Reason, req.ReasonHidden, moderator) {
+	if !db.BanUser(req.ProfileID, req.Tos, length, req.Reason, req.ReasonHidden, moderator) {
 		return false, "Failed to ban user", http.StatusInternalServerError
 	}
 
 	gpcm.KickPlayerCustomMessage(req.ProfileID, req.Reason, gpcm.WWFCMsgProfileRestrictedCustom)
+
+	logging.Event("profile_banned", map[string]any{
+		"profile_id":     req.ProfileID,
+		"tos_violation":  req.Tos,
+		"length_minutes": minutes,
+		"reason":         req.Reason,
+		"reason_hidden":  req.ReasonHidden,
+		"moderator":      moderator,
+	})
 
 	return true, "", http.StatusOK
 }

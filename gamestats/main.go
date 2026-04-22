@@ -1,9 +1,7 @@
 package gamestats
 
 import (
-	"context"
 	"encoding/gob"
-	"fmt"
 	"os"
 	"strings"
 	"wwfc/common"
@@ -11,7 +9,6 @@ import (
 	"wwfc/gpcm"
 	"wwfc/logging"
 
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/linkdata/deadlock"
 	"github.com/logrusorgru/aurora/v3"
 )
@@ -37,8 +34,7 @@ type GameStatsSession struct {
 }
 
 var (
-	ctx  = context.Background()
-	pool *pgxpool.Pool
+	db database.Connection
 
 	serverName string
 	webSalt    string
@@ -57,16 +53,7 @@ func StartServer(reload bool) {
 	common.ReadGameList()
 
 	// Start SQL
-	dbString := fmt.Sprintf("postgres://%s:%s@%s/%s", config.Username, config.Password, config.DatabaseAddress, config.DatabaseName)
-	dbConf, err := pgxpool.ParseConfig(dbString)
-	if err != nil {
-		panic(err)
-	}
-
-	pool, err = pgxpool.ConnectConfig(ctx, dbConf)
-	if err != nil {
-		panic(err)
-	}
+	db = database.Start(config)
 
 	if reload {
 		// Load state
@@ -74,22 +61,19 @@ func StartServer(reload bool) {
 		if err != nil {
 			panic(err)
 		}
+		defer func() {
+			common.ShouldNotError(file.Close())
+		}()
 
 		decoder := gob.NewDecoder(file)
-
-		err = decoder.Decode(&sessionsByConnIndex)
-		file.Close()
-
-		if err != nil {
-			panic(err)
-		}
+		common.ShouldNotError(decoder.Decode(&sessionsByConnIndex))
 
 		for _, session := range sessionsByConnIndex {
 			session.gameInfo = common.GetGameInfoByName(session.GameName)
 			if session.gameInfo == nil {
 				logging.Error(session.ModuleName, "Unknown game from reload:", aurora.Cyan(session.GameName))
 				// Force close the session now to prevent a panic later
-				common.CloseConnection(ServerName, session.ConnIndex)
+				_ = common.CloseConnection(ServerName, session.ConnIndex)
 				delete(sessionsByConnIndex, session.ConnIndex)
 			}
 		}
@@ -101,20 +85,14 @@ func StartServer(reload bool) {
 func Shutdown() {
 	// Save state
 	file, err := os.OpenFile("state/gstats_sessions.gob", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		panic(err)
-	}
+	common.ShouldNotError(err)
+	defer func() {
+		common.ShouldNotError(file.Close())
+	}()
+	defer db.Close()
 
 	encoder := gob.NewEncoder(file)
-
-	err = encoder.Encode(sessionsByConnIndex)
-	file.Close()
-
-	if err != nil {
-		panic(err)
-	}
-
-	pool.Close()
+	common.ShouldNotError(encoder.Encode(sessionsByConnIndex))
 
 	logging.Notice("GSTATS", "Saved", aurora.Cyan(len(sessionsByConnIndex)), "sessions")
 }
@@ -145,7 +123,10 @@ func NewConnection(index uint64, address string) {
 			"id":        "1",
 		},
 	})
-	common.SendPacket(ServerName, index, []byte(session.WriteBuffer))
+	err := common.SendPacket(ServerName, index, []byte(session.WriteBuffer))
+	if err != nil {
+		logging.Error(session.ModuleName, "Failed to send initial packet:", err)
+	}
 	session.WriteBuffer = []byte{}
 
 	logging.Notice(session.ModuleName, "Connection established from", address)
@@ -247,15 +228,19 @@ func HandlePacket(index uint64, data []byte) {
 
 	commands = session.handleCommand("getpd", commands, session.getpd)
 	commands = session.handleCommand("setpd", commands, session.setpd)
-	common.UNUSED(session.ignoreCommand)
+	common.MaybeUnused(session.ignoreCommand)
 
 	for _, command := range commands {
 		logging.Error(session.ModuleName, "Unknown command:", aurora.Cyan(command))
 	}
 
 	if len(session.WriteBuffer) > 0 {
-		common.SendPacket(ServerName, session.ConnIndex, session.WriteBuffer)
-		session.WriteBuffer = []byte{}
+		err := common.SendPacket(ServerName, session.ConnIndex, session.WriteBuffer)
+		if err != nil {
+			logging.Error(session.ModuleName, "Failed to send packet:", err)
+		} else {
+			session.WriteBuffer = []byte{}
+		}
 	}
 }
 

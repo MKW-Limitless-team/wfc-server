@@ -96,9 +96,15 @@ func (session *Session) removeFromGroup() {
 		}
 
 		delete(groups, session.groupPointer.GroupName)
+		logging.Event(
+			"group_deleted",
+			map[string]any{
+				"dwc_group_id": session.groupPointer.GroupID,
+				"group_name":   session.groupPointer.GroupName,
+			},
+		)
 	} else if session.groupPointer.server == session {
 		logging.Notice("QR2", "Server down in group", aurora.Cyan(session.groupPointer.GroupName))
-		session.groupPointer.server = nil
 		session.groupPointer.findNewServer()
 	}
 
@@ -112,8 +118,18 @@ func (session *Session) removeFromGroup() {
 		}
 	}
 
+	logging.Event(
+		"group_left",
+		map[string]any{
+			"dwc_group_id": session.groupPointer.GroupID,
+			"group_name":   session.groupPointer.GroupName,
+			"profile_id":   session.Data["dwc_pid"],
+		},
+	)
+
 	session.groupPointer = nil
 	session.GroupName = ""
+
 }
 
 // Update session data, creating the session if it doesn't exist. Returns a copy of the session data.
@@ -312,11 +328,12 @@ func saveSessions() error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		common.ShouldNotError(file.Close())
+	}()
 
 	encoder := gob.NewEncoder(file)
-	err = encoder.Encode(sessions)
-	file.Close()
-	return err
+	return encoder.Encode(sessions)
 }
 
 // Load the sessions from a file. Expects the mutex to be locked.
@@ -325,10 +342,12 @@ func loadSessions() error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		common.ShouldNotError(file.Close())
+	}()
 
 	decoder := gob.NewDecoder(file)
 	err = decoder.Decode(&sessions)
-	file.Close()
 	if err != nil {
 		return err
 	}
