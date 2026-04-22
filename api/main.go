@@ -35,6 +35,11 @@ func Shutdown() {
 func RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/groups", HandleGroups)
 	mux.HandleFunc("/api/stats", HandleStats)
+	mux.HandleFunc("/api/pinfo", HandlePinfo)
+	mux.HandleFunc("/api/mkw_characters", HandleMKWCharacters)
+	mux.HandleFunc("/api/mkw_vehicles", HandleMKWVehicles)
+	mux.HandleFunc("/api/mkw_tracks", HandleMKWTracks)
+	mux.HandleFunc("/api/mkw_rr", HandleMKWRR)
 	mux.HandleFunc("/api/ban", HandleBan)
 	mux.HandleFunc("/api/unban", HandleUnban)
 	mux.HandleFunc("/api/kick", HandleKick)
