@@ -1,15 +1,9 @@
 package database
 
 import (
-	"context"
 	"errors"
 	"math/rand"
 	"time"
-
-	"wwfc/logging"
-
-	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/logrusorgru/aurora/v3"
 )
 
 const (
@@ -23,23 +17,13 @@ const (
 	DoesUserExist           = `SELECT EXISTS(SELECT 1 FROM users WHERE user_id = $1 AND gsbrcd = $2)`
 	IsProfileIDInUse        = `SELECT EXISTS(SELECT 1 FROM users WHERE profile_id = $1)`
 	DeleteUserSession       = `DELETE FROM sessions WHERE profile_id = $1`
-	GetUserProfileID        = `SELECT users.profile_id, users.ng_device_id, users.email, users.unique_nick, users.firstname, users.lastname, users.open_host, player_data.discord_id, users.last_ip_address FROM users LEFT JOIN player_data ON player_data.profile_id = users.profile_id WHERE users.user_id = $1 AND users.gsbrcd = $2`
+	GetUserProfileID        = `SELECT users.profile_id, users.ng_device_id, users.email, users.unique_nick, users.firstname, users.lastname, users.open_host, users.last_ip_address, users.allow_default_keys FROM users WHERE users.user_id = $1 AND users.gsbrcd = $2`
 	UpdateUserLastIPAddress = `UPDATE users SET last_ip_address = $2, last_ingamesn = $3 WHERE profile_id = $1`
-	UpdateDiscordID         = `INSERT INTO player_data (profile_id, discord_id) VALUES ($1, $2) ON CONFLICT (profile_id) DO UPDATE SET discord_id = EXCLUDED.discord_id`
 	UpdateUserBan           = `UPDATE users SET has_ban = true, ban_issued = $2, ban_expires = $3, ban_reason = $4, ban_reason_hidden = $5, ban_moderator = $6, ban_tos = $7 WHERE profile_id = $1`
 	DisableUserBan          = `UPDATE users SET has_ban = false WHERE profile_id = $1`
 
 	GetMKWFriendInfoQuery    = `SELECT mariokartwii_friend_info FROM users WHERE profile_id = $1`
 	UpdateMKWFriendInfoQuery = `UPDATE users SET mariokartwii_friend_info = $2 WHERE profile_id = $1`
-)
-
-type LinkStage byte
-
-const (
-	LS_NONE LinkStage = iota
-	LS_STARTED
-	LS_FRIENDED
-	LS_FINISHED
 )
 
 type User struct {
@@ -58,7 +42,6 @@ type User struct {
 	LastInGameSn       string
 	LastIPAddress      string
 	DiscordID          string
-	LinkStage          LinkStage
 	BanModerator       string
 	BanReasonHidden    string
 	BanIssued          *time.Time
@@ -113,17 +96,6 @@ func (c *Connection) UpdateProfileID(user *User, newProfileId uint32) error {
 	return err
 }
 
-func (user *User) UpdateDiscordID(pool *pgxpool.Pool, ctx context.Context, discordID string) error {
-	_, err := pool.Exec(ctx, UpdateDiscordID, user.ProfileId, discordID)
-	if err == nil {
-		user.DiscordID = discordID
-	} else {
-		logging.Error("DB", "Failed to persist DiscordID", aurora.Cyan(discordID), "for profile", aurora.Cyan(user.ProfileId), "error:", aurora.Cyan(err))
-	}
-
-	return err
-}
-
 func GetUniqueUserID() uint64 {
 	// Not guaranteed unique but doesn't matter in practice if multiple people have the same user ID.
 	return uint64(rand.Int63n(0x80000000000))
@@ -153,10 +125,36 @@ func (c *Connection) UpdateProfile(user *User, data map[string]string) {
 	}
 }
 
-func (c *Connection) GetProfile(profileId uint32) (User, bool) {
+func (c *Connection) getProfile(profileId uint32) (User, bool) {
 	user := User{}
+	var firstName *string
+	var lastName *string
+	var banReason *string
+	var lastInGameSn *string
+	var lastIPAddress *string
+	var discordID *string
+	var banModerator *string
+	var banReasonHidden *string
 	row := c.pool.QueryRow(c.ctx, GetUser, profileId)
-	err := row.Scan(&user.UserId, &user.GsbrCode, &user.Email, &user.UniqueNick, &user.FirstName, &user.LastName, &user.OpenHost, &user.LastIPAddress, &user.LastInGameSn)
+	err := row.Scan(
+		&user.UserId,
+		&user.GsbrCode,
+		&user.NgDeviceId,
+		&user.Email,
+		&user.UniqueNick,
+		&firstName,
+		&lastName,
+		&user.Restricted,
+		&banReason,
+		&user.OpenHost,
+		&lastInGameSn,
+		&lastIPAddress,
+		&discordID,
+		&banModerator,
+		&banReasonHidden,
+		&user.BanIssued,
+		&user.BanExpires,
+	)
 	if err != nil {
 		return User{}, false
 	}
@@ -185,7 +183,6 @@ func (c *Connection) GetProfile(profileId uint32) (User, bool) {
 
 	if discordID != nil {
 		user.DiscordID = *discordID
-		user.LinkStage = LS_FINISHED
 	}
 
 	if banModerator != nil {

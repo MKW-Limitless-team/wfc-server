@@ -76,7 +76,7 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 		}, http.StatusBadRequest
 	}
 
-	realUser, ok := database.GetProfile(pool, ctx, req.ProfileID)
+	realUser, ok := db.GetProfile(req.ProfileID)
 	if !ok {
 		return PinfoResponse{
 			User:    database.User{},

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"wwfc/database"
 )
 
 // HandleMKWVehicles handles GET requests to retrieve vehicle usage data for a specific player
@@ -26,7 +25,7 @@ func HandleMKWVehicles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vehicleUsage, err := database.GetPlayerVehicleUsage(pool, ctx, uint32(profileID))
+	vehicleUsage, err := db.GetPlayerVehicleUsage(uint32(profileID))
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return

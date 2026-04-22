@@ -37,3 +37,19 @@ func (c *Connection) Close() {
 		c.pool.Close()
 	}
 }
+
+func (c *Connection) GetProfile(profileId uint32) (User, bool) {
+	return c.getProfile(profileId)
+}
+
+func (c *Connection) GetAllTrackFrequencies() ([]TrackEntry, error) {
+	return GetAllTrackFrequencies(c.pool, c.ctx)
+}
+
+func (c *Connection) GetPlayerCharacterUsage(profileId uint32) (CharacterUsageEntry, error) {
+	return GetPlayerCharacterUsage(c.pool, c.ctx, profileId)
+}
+
+func (c *Connection) GetPlayerVehicleUsage(profileId uint32) (VehicleUsageEntry, error) {
+	return GetPlayerVehicleUsage(c.pool, c.ctx, profileId)
+}

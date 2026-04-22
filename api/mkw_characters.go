@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"wwfc/database"
 )
 
 // HandleMKWCharacters handles GET requests to retrieve character usage data for a specific player
@@ -26,7 +25,7 @@ func HandleMKWCharacters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	characterUsage, err := database.GetPlayerCharacterUsage(pool, ctx, uint32(profileID))
+	characterUsage, err := db.GetPlayerCharacterUsage(uint32(profileID))
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return

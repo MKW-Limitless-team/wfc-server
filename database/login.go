@@ -77,7 +77,6 @@ func (c *Connection) LoginUserToGPCM(userId uint64, gsbrcd string, profileId uin
 		var firstName *string
 		var lastName *string
 		var allowDefaultKeys bool
-		var discordID *string
 
 		err := c.pool.QueryRow(c.ctx, GetUserProfileID, userId, gsbrcd).Scan(&user.ProfileId, &user.NgDeviceId, &user.Email, &user.UniqueNick, &firstName, &lastName, &user.OpenHost, &lastIPAddress, &allowDefaultKeys)
 		if err != nil {
@@ -94,11 +93,6 @@ func (c *Connection) LoginUserToGPCM(userId uint64, gsbrcd string, profileId uin
 
 		if lastName != nil {
 			user.LastName = *lastName
-		}
-
-		if discordID != nil {
-			user.DiscordID = *discordID
-			user.LinkStage = LS_FINISHED
 		}
 
 		validDeviceId := false
@@ -235,7 +229,6 @@ func (c *Connection) LoginUserToGameStats(userId uint64, gsbrcd string) (User, e
 	var lastName *string
 	var lastIPAddress *string
 	var allowDefaultKeys bool
-	var discordID *string
 
 	err := c.pool.QueryRow(c.ctx, GetUserProfileID, userId, gsbrcd).Scan(&user.ProfileId, &user.NgDeviceId, &user.Email, &user.UniqueNick, &firstName, &lastName, &user.OpenHost, &lastIPAddress, &allowDefaultKeys)
 	if err != nil {
@@ -248,11 +241,6 @@ func (c *Connection) LoginUserToGameStats(userId uint64, gsbrcd string) (User, e
 
 	if lastName != nil {
 		user.LastName = *lastName
-	}
-
-	if discordID != nil {
-		user.DiscordID = *discordID
-		user.LinkStage = LS_FINISHED
 	}
 
 	return user, nil

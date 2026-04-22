@@ -14,7 +14,7 @@ func HandleMKWTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tracks, err := database.GetAllTrackFrequencies(pool, ctx)
+	tracks, err := db.GetAllTrackFrequencies()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
