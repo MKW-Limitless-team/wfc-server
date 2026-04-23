@@ -174,7 +174,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"An unknown error has occurred\n" +
-				"while logging in to WiiLink WFC.\n" +
+				"while logging in to Limitlink.\n" +
 				"\n" +
 				"Error Code: %[1]d",
 		},
@@ -185,7 +185,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"Additional setup is required\n" +
-				"to use WiiLink WFC on Dolphin.\n" +
+				"to use Limitlink on Dolphin.\n" +
 				"Visit wfc.wiilink.ca/dolphin\n" +
 				"\n" +
 				"Error Code: %[1]d",
@@ -196,10 +196,9 @@ var (
 		ErrorCode: 22002,
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
-				"You are banned from WiiLink WFC\n" +
+				"You are banned from Limitlink\n" +
 				"due to a violation of the\n" +
 				"Terms of Service.\n" +
-				"Visit wfc.wiilink.ca/tos\n" +
 				"\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
@@ -211,9 +210,8 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"You have been banned from\n" +
-				"WiiLink WFC due to a violation\n" +
+				"Limitlink due to a violation\n" +
 				"of the Terms of Service.\n" +
-				"Visit wfc.wiilink.ca/tos\n" +
 				"\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
@@ -226,8 +224,7 @@ var (
 			LangEnglish: "" +
 				"You are banned from public\n" +
 				"matches due to a violation\n" +
-				"of the WiiLink WFC Rules.\n" +
-				"Visit wfc.wiilink.ca/rules\n" +
+				"of the Limitlink rules.\n" +
 				"\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
@@ -240,8 +237,7 @@ var (
 			LangEnglish: "" +
 				"You have been banned from public\n" +
 				"matches due to a violation\n" +
-				"of the WiiLink WFC Rules.\n" +
-				"Visit wfc.wiilink.ca/rules\n" +
+				"of the Limitlink Rules.\n" +
 				"\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
@@ -275,7 +271,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"You have been kicked from\n" +
-				"WiiLink WFC.\n" +
+				"Limitlink.\n" +
 				"\n" +
 				"Error Code: %[1]d",
 		},
@@ -286,8 +282,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"You have been kicked from\n" +
-				"WiiLink WFC by a moderator.\n" +
-				"Visit wfc.wiilink.ca/rules\n" +
+				"Limitlink by a moderator.\n" +
 				"\n" +
 				"Error Code: %[1]d",
 		},
@@ -309,7 +304,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"You have been kicked from\n" +
-				"WiiLink WFC by a moderator.\n" +
+				"Limitlink by a moderator.\n" +
 				"Reason: %[3]s\n" +
 				"Error Code: %[1]d\n" +
 				"Support Info: NG%08[2]x",
@@ -368,7 +363,7 @@ var (
 		ErrorCode: 22008,
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
-				"The WiiLink WFC payload is invalid.\n" +
+				"The Limitlink payload is invalid.\n" +
 				"Try restarting your game.\n" +
 				"\n" +
 				"Error Code: %[1]d",
@@ -380,7 +375,7 @@ var (
 		MessageRMC: map[byte]string{
 			LangEnglish: "" +
 				"You were disconnected from\n" +
-				"WiiLink WFC due to an invalid\n" +
+				"Limitlink due to an invalid\n" +
 				"VR or BR value.\n" +
 				"\n" +
 				"Error Code: %[1]d",

@@ -265,7 +265,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 				logging.Error(g.ModuleName, "Using DNS for incompatible game:", aurora.Cyan(g.GameName))
 				g.replyError(GPError{
 					ErrorCode:   ErrLogin.ErrorCode,
-					ErrorString: "The client is not patched to use WiiLink WFC.",
+					ErrorString: "The client is not patched to use Limitlink.",
 					Fatal:       true,
 				})
 				return
