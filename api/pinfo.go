@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"wwfc/common"
 	"wwfc/database"
+	"wwfc/logging"
 )
 
 type PinfoRequestSpec struct {
@@ -35,13 +36,14 @@ func HandlePinfo(w http.ResponseWriter, r *http.Request) {
 	var response PinfoResponse
 	var statusCode int
 
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		response, statusCode = handlePinfoImpl(r)
-	} else if r.Method == http.MethodOptions {
+	case http.MethodOptions:
 		statusCode = http.StatusNoContent
 		w.Header().Set("Access-Control-Allow-Methods", "POST")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	} else {
+	default:
 		statusCode = http.StatusMethodNotAllowed
 		w.Header().Set("Allow", "POST")
 		response = PinfoResponse{
@@ -60,7 +62,9 @@ func HandlePinfo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
 	w.WriteHeader(statusCode)
-	w.Write(jsonData)
+	if _, err := w.Write(jsonData); err != nil {
+		logging.Error("API", "Failed to write pinfo response:", err)
+	}
 }
 
 func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {

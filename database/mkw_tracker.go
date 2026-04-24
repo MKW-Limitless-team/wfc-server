@@ -24,31 +24,11 @@ const (
 		"FROM tracks " +
 		"ORDER BY frequency DESC"
 
-	getCharacterUsageQuery = "" +
-		"SELECT profile_id FROM characters " +
-		"ORDER BY %s DESC " +
-		"LIMIT $1 OFFSET $2"
-
-	getVehicleUsageQuery = "" +
-		"SELECT profile_id FROM vehicles " +
-		"ORDER BY %s DESC " +
-		"LIMIT $1 OFFSET $2"
-
 	getPlayerCharacterUsageQuery = "" +
 		"SELECT * FROM characters WHERE profile_id = $1"
 
 	getPlayerVehicleUsageQuery = "" +
 		"SELECT * FROM vehicles WHERE profile_id = $1"
-
-	getGlobalCharacterUsageQuery = "" +
-		"SELECT profile_id, %s FROM characters " +
-		"ORDER BY %s DESC " +
-		"LIMIT $1 OFFSET $2"
-
-	getGlobalVehicleUsageQuery = "" +
-		"SELECT profile_id, %s FROM vehicles " +
-		"ORDER BY %s DESC " +
-		"LIMIT $1 OFFSET $2"
 
 	// Dynamic upsert queries using column name parameter
 	incrementCharacterUsageQueryTemplate = "" +

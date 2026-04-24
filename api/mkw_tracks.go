@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"wwfc/database"
+	"wwfc/logging"
 )
 
 // HandleMKWTracks handles GET requests to retrieve track frequency data
@@ -33,5 +34,7 @@ func HandleMKWTracks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
-	w.Write(jsonData)
+	if _, err = w.Write(jsonData); err != nil {
+		logging.Error("API", "Failed to write MKW track frequency response:", err)
+	}
 }

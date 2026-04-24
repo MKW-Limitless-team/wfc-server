@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"wwfc/logging"
 )
 
 // HandleMKWCharacters handles GET requests to retrieve character usage data for a specific player
@@ -40,5 +41,7 @@ func HandleMKWCharacters(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
-	w.Write(jsonData)
+	if _, err = w.Write(jsonData); err != nil {
+		logging.Error("API", "Failed to write MKW character usage response:", err)
+	}
 }

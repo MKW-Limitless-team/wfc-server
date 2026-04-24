@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"wwfc/logging"
 	"wwfc/qr2"
 )
 
@@ -56,5 +57,7 @@ func HandleMKWRR(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Length", strconv.Itoa(len(jsonData)))
-	w.Write(jsonData)
+	if _, err = w.Write(jsonData); err != nil {
+		logging.Error("API", "Failed to write MKW race result response:", err)
+	}
 }
