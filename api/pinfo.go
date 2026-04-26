@@ -24,18 +24,6 @@ type PinfoResponse struct {
 }
 
 type PinfoPlayer struct {
-	ProfileID uint32      `json:"profile_id"`
-	MiiName   string      `json:"mii_name"`
-	MiiData   string      `json:"mii_data"`
-	OpenHost  bool        `json:"open_host"`
-	Banned    bool        `json:"banned"`
-	DiscordID string      `json:"discord_id"`
-	Player    PinfoPlayer `json:"player"`
-	Success   bool        `json:"success"`
-	Error     string      `json:"error"`
-}
-
-type PinfoPlayer struct {
 	ProfileID uint32 `json:"profile_id"`
 	MiiName   string `json:"mii_name"`
 	MiiData   string `json:"mii_data"`
@@ -125,7 +113,11 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 		}
 	}
 
-	miiName, miiData := getPinfoMiiData(realUser.ProfileId)
+	miiName := ""
+	miiData := ""
+	if fullAccess {
+		miiName, miiData = getPinfoMiiData(realUser.ProfileId)
+	}
 
 	return PinfoResponse{
 		Player: PinfoPlayer{
@@ -142,7 +134,7 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 }
 
 func getPinfoMiiData(profileID uint32) (string, string) {
-	friendInfo := database.GetMKWFriendInfo(pool, ctx, profileID)
+	friendInfo := db.GetMKWFriendInfo(profileID)
 	if friendInfo == "" {
 		return "", ""
 	}
