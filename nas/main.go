@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 	"wwfc/api"
 	"wwfc/common"
@@ -123,19 +124,139 @@ func Shutdown() {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
-	// Check for host-specific muxes
-	for regex, mux := range hostMuxes {
-		if regex.MatchString(r.Host) {
-			mux.ServeHTTP(w, r)
-			return
-		}
+	if blocked, rule := common.IsIPBanned(r.RemoteAddr); blocked {
+		logging.Warn("NAS", "Blocked HTTP request from", aurora.BrightCyan(r.RemoteAddr), "matching", aurora.Cyan(rule))
+		replyHTTPError(w, http.StatusForbidden, "403 Forbidden")
+		return
 	}
 
-	http.DefaultServeMux.ServeHTTP(w, r)
-}
+	// Check for *.sake.gs.* or sake.gs.*
+	if regexSakeHost.MatchString(r.Host) {
+		// Redirect to the sake server
+		sake.HandleRequest(w, r)
+		return
+	}
 
-func getModuleName(r *http.Request) string {
-	return "NAS:" + r.RemoteAddr
+	// Check for *.gamestats(2).gs.* or gamestats(2).gs.*
+	if regexGamestatsHost.MatchString(r.Host) {
+		// Redirect to the gamestats server
+		gamestats.HandleWebRequest(w, r)
+		return
+	}
+
+	// Check for *.race.gs.* or race.gs.*
+	if regexRaceHost.MatchString(r.Host) {
+		// Redirect to the race server
+		race.HandleRequest(w, r)
+		return
+	}
+
+	moduleName := "NAS:" + r.RemoteAddr
+
+	// Handle conntest server
+	if strings.HasPrefix(r.Host, "conntest.") {
+		handleConnectionTest(w)
+		return
+	}
+
+	// Handle DWC auth requests
+	if r.URL.String() == "/ac" || r.URL.String() == "/pr" || r.URL.String() == "/download" {
+		handleAuthRequest(moduleName, w, r)
+		return
+	}
+
+	// Handle /nastest.jsp
+	if r.URL.Path == "/nastest.jsp" {
+		handleNASTest(w)
+		return
+	}
+
+	// Check for /payload
+	if strings.HasPrefix(r.URL.String(), "/payload") {
+		logging.Info("NAS", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
+		if payloadServerAddress != "" {
+			// Forward the request to the payload server
+			forwardPayloadRequest(moduleName, w, r)
+		} else {
+			handlePayloadRequest(moduleName, w, r)
+		}
+		return
+	}
+
+	// Stage 1
+	if match := regexStage1URL.FindStringSubmatch(r.URL.String()); match != nil {
+		val, err := strconv.Atoi(match[1])
+		if err != nil {
+			panic(err)
+		}
+
+		logging.Info("NAS", "Get stage 1:", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
+		downloadStage1(w, val)
+		return
+	}
+
+	// Check for /api/groups
+	if r.URL.Path == "/api/groups" {
+		api.HandleGroups(w, r)
+		return
+	}
+
+	// Check for /api/pinfo
+	if r.URL.Path == "/api/pinfo" {
+		api.HandlePinfo(w, r)
+		return
+	}
+
+	// Check for /api/stats
+	if r.URL.Path == "/api/stats" {
+		api.HandleStats(w, r)
+		return
+	}
+
+	// Check for /api/ban
+	if r.URL.Path == "/api/ban" {
+		api.HandleBan(w, r)
+		return
+	}
+
+	// Check for /api/unban
+	if r.URL.Path == "/api/unban" {
+		api.HandleUnban(w, r)
+		return
+	}
+
+	// Check for /api/kick
+	if r.URL.Path == "/api/kick" {
+		api.HandleKick(w, r)
+		return
+	}
+
+	// Check for /api/mkw_rr
+	if r.URL.Path == "/api/mkw_rr" {
+		api.HandleMKWRR(w, r)
+		return
+	}
+
+	// Check for /api/mkw_tracks
+	if r.URL.Path == "/api/mkw_tracks" {
+		api.HandleMKWTracks(w, r)
+		return
+	}
+
+	// Check for /api/mkw_characters
+	if r.URL.Path == "/api/mkw_characters" {
+		api.HandleMKWCharacters(w, r)
+		return
+	}
+
+	// Check for /api/mkw_vehicles
+	if r.URL.Path == "/api/mkw_vehicles" {
+		api.HandleMKWVehicles(w, r)
+		return
+	}
+
+	logging.Info("NAS", aurora.Yellow(r.Method), aurora.Cyan(r.URL), "via", aurora.Cyan(r.Host), "from", aurora.BrightCyan(r.RemoteAddr))
+	replyHTTPError(w, 404, "404 Not Found")
 }
 
 func replyHTTPError(w http.ResponseWriter, errorCode int, errorString string) {
