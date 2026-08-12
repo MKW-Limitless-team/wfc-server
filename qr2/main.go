@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 	"wwfc/common"
+	"wwfc/database"
 	"wwfc/logging"
 
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -38,12 +40,13 @@ const (
 	AvailableRequest        = 0x09
 	ClientRegisteredReply   = 0x0A
 
+	// Added by WiiLink
 	ClientExploitReply = 0x10
 )
 
 var (
 	masterConn net.PacketConn
-	inShutdown = false
+	inShutdown atomic.Bool
 	waitGroup  = sync.WaitGroup{}
 )
 
@@ -57,8 +60,22 @@ func StartServer(reload bool) {
 		panic(err)
 	}
 
+	// Connect to database for event logging
+	if config.EventReporting.LogToDatabase {
+		db := database.Start(config)
+		db.RegisterEvents(config, []string{
+			"group_created",
+			"group_deleted",
+			"group_joined",
+			"group_left",
+			"group_host_changed",
+			"natneg_succeeded",
+			"natneg_failed",
+		})
+	}
+
 	masterConn = conn
-	inShutdown = false
+	inShutdown.Store(false)
 
 	if reload {
 		err := loadSessions()
@@ -89,11 +106,13 @@ func StartServer(reload bool) {
 		defer waitGroup.Done()
 
 		// Close the listener when the application closes.
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+		}()
 		logging.Notice("QR2", "Listening on", aurora.BrightCyan(address))
 
 		for {
-			if inShutdown {
+			if inShutdown.Load() {
 				return
 			}
 
@@ -111,8 +130,8 @@ func StartServer(reload bool) {
 }
 
 func Shutdown() {
-	inShutdown = true
-	masterConn.Close()
+	inShutdown.Store(true)
+	common.ShouldNotError(masterConn.Close())
 	waitGroup.Wait()
 
 	mutex.Lock()
@@ -176,7 +195,7 @@ func handleConnection(conn net.PacketConn, addr net.UDPAddr, buffer []byte) {
 			session.Authenticated = true
 			mutex.Unlock()
 
-			conn.WriteTo(createResponseHeader(ClientRegisteredReply, session.SessionID), &addr)
+			_, _ = conn.WriteTo(createResponseHeader(ClientRegisteredReply, session.SessionID), &addr)
 		} else {
 			mutex.Unlock()
 		}
@@ -213,14 +232,14 @@ func handleConnection(conn net.PacketConn, addr net.UDPAddr, buffer []byte) {
 
 	case KeepAliveRequest:
 		// logging.Info(moduleName, "Command:", aurora.Yellow("KEEPALIVE"))
-		conn.WriteTo(createResponseHeader(KeepAliveRequest, 0), &addr)
+		_, _ = conn.WriteTo(createResponseHeader(KeepAliveRequest, 0), &addr)
 
 		session.LastKeepAlive = time.Now().UTC().Unix()
 		return
 
 	case AvailableRequest:
 		logging.Info("QR2", "Command:", aurora.Yellow("AVAILABLE"))
-		conn.WriteTo(createResponseHeader(AvailableRequest, 0), &addr)
+		_, _ = conn.WriteTo(createResponseHeader(AvailableRequest, 0), &addr)
 		return
 
 	case ClientRegisteredReply:

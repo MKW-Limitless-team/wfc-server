@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"wwfc/api"
 	"wwfc/common"
+	"wwfc/database"
 	"wwfc/gamestats"
 	"wwfc/gpcm"
 	"wwfc/gpsp"
@@ -69,8 +71,23 @@ type RPCPacket struct {
 	Data    []byte
 }
 
+func connectAndLogEvent(eventType string) {
+	var db database.Connection
+	defer db.Close()
+	defer logging.EventSynced(eventType, map[string]any{})
+	db = database.Start(config)
+	db.RegisterEvents(config, []string{eventType})
+}
+
 // backendMain starts all the servers and creates an RPC server to communicate with the frontend
 func backendMain(noSignal, noReload bool) {
+	config.RegisterWebhooks()
+
+	err := os.Mkdir("state", 0755)
+	if err != nil && !os.IsExist(err) {
+		panic(err)
+	}
+
 	sigExit := make(chan os.Signal, 1)
 	signal.Notify(sigExit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -78,13 +95,14 @@ func backendMain(noSignal, noReload bool) {
 		logging.Error("BACKEND", err)
 	}
 
-	rpc.Register(&RPCPacket{})
+	common.ShouldNotError(rpc.Register(&RPCPacket{}))
+
 	address := config.BackendAddress
 
 	l, err := net.Listen("tcp", address)
 	if err != nil {
 		logging.Error("BACKEND", "Failed to listen on", aurora.BrightCyan(address))
-		os.Exit(1)
+		panic(err)
 	}
 
 	common.ConnectFrontend()
@@ -95,9 +113,7 @@ func backendMain(noSignal, noReload bool) {
 	}
 
 	reload, err := common.VerifyState(uuid)
-	if err != nil {
-		panic(err)
-	}
+	common.ShouldNotError(err)
 
 	wg := &sync.WaitGroup{}
 	actions := []func(bool){nas.StartServer, gpcm.StartServer, qr2.StartServer, gpsp.StartServer, serverbrowser.StartServer, race.StartServer, sake.StartServer, natneg.StartServer, api.StartServer, gamestats.StartServer}
@@ -112,11 +128,14 @@ func backendMain(noSignal, noReload bool) {
 	// Wait for all servers to start
 	wg.Wait()
 
+	// Log via event that the backend has started
+	go connectAndLogEvent("backend_started")
+
 	go func() {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
-				logging.Error("BACKEND", "Failed to accept connection on", aurora.BrightCyan(address))
+				logging.Error("BACKEND", "Failed to accept connection on", aurora.BrightCyan(address), ":", err)
 				continue
 			}
 
@@ -126,7 +145,7 @@ func backendMain(noSignal, noReload bool) {
 
 	logging.Notice("BACKEND", "Listening on", aurora.BrightCyan(address))
 
-	common.Ready()
+	common.ShouldNotError(common.Ready())
 
 	// Wait for a signal to shutdown
 	<-sigExit
@@ -136,11 +155,9 @@ func backendMain(noSignal, noReload bool) {
 	}
 
 	stateUuid, err := common.Shutdown()
-	if err != nil {
-		panic(err)
-	}
+	common.ShouldNotError(err)
 
-	(&RPCPacket{}).Shutdown(stateUuid, &struct{}{})
+	common.ShouldNotError((&RPCPacket{}).Shutdown(stateUuid, &struct{}{}))
 }
 
 func loadUuidFile() string {
@@ -149,7 +166,9 @@ func loadUuidFile() string {
 		return ""
 	}
 
-	defer stateFile.Close()
+	defer func() {
+		common.ShouldNotError(stateFile.Close())
+	}()
 
 	uuid, err := io.ReadAll(stateFile)
 	if err != nil {
@@ -242,6 +261,8 @@ func (r *RPCPacket) Shutdown(stateUuid string, _ *struct{}) error {
 		panic(err)
 	}
 
+	connectAndLogEvent("backend_stopped")
+
 	os.Exit(0)
 	return nil
 }
@@ -262,7 +283,8 @@ var (
 	rpcClient *rpc.Client
 
 	// This mutex could be locked for a very long time, don't use deadlock detection
-	rpcMutex sync.Mutex
+	rpcMutex   sync.Mutex
+	rpcWaiting atomic.Bool
 
 	rpcBusyCount sync.WaitGroup
 	backendReady = make(chan struct{})
@@ -275,6 +297,8 @@ var (
 
 // frontendMain starts the backend process and communicates with it using RPC
 func frontendMain(noSignal, noBackend bool) {
+	rpcWaiting.Store(false)
+
 	integrated = !noBackend
 
 	sigExit := make(chan os.Signal, 1)
@@ -319,23 +343,37 @@ func frontendMain(noSignal, noBackend bool) {
 		select {}
 	}
 
-	if rpcClient == nil {
+	// If we're waiting for the backend to connect, then don't try to lock the
+	// mutex because it's never going to unlock
+	if rpcWaiting.Load() {
+		logging.Notice("FRONTEND", "Backend rpcClient is not connected")
 		return
 	}
 
-	rpcClient.Call("RPCPacket.Shutdown", "", nil)
-	rpcClient.Close()
+	rpcMutex.Lock()
+	if rpcClient == nil {
+		logging.Notice("FRONTEND", "Backend rpcClient is not connected")
+		rpcMutex.Unlock()
+		return
+	}
+	rpcMutex.Unlock()
+
+	logging.Notice("FRONTEND", "Sending RPCPacket.Shutdown")
+	if err := rpcClient.Call("RPCPacket.Shutdown", "", nil); err != nil {
+		logging.Error("FRONTEND", "Error during backend shutdown:", err.Error())
+	}
+	_ = rpcClient.Close()
 }
 
 // startFrontendServer starts the frontend RPC server.
 func startFrontendServer() {
-	rpc.Register(&RPCFrontendPacket{})
+	common.ShouldNotError(rpc.Register(&RPCFrontendPacket{}))
 	address := config.FrontendAddress
 
 	l, err := net.Listen("tcp", address)
 	if err != nil {
 		logging.Error("FRONTEND", "Failed to listen on", aurora.BrightCyan(address))
-		os.Exit(1)
+		panic(err)
 	}
 
 	logging.Notice("FRONTEND", "Listening on", aurora.BrightCyan(address))
@@ -358,8 +396,8 @@ func startFrontendServer() {
 func startBackendProcess(reload bool, wait bool) {
 	exe, err := os.Executable()
 	if err != nil {
-		logging.Error("FRONTEND", "Failed to get executable path:", err)
-		os.Exit(1)
+		logging.Error("FRONTEND", "Failed to get executable path")
+		panic(err)
 	}
 
 	logging.Info("FRONTEND", "Running from", aurora.BrightCyan(exe))
@@ -375,8 +413,8 @@ func startBackendProcess(reload bool, wait bool) {
 	cmd.Stderr = os.Stderr
 	err = cmd.Start()
 	if err != nil {
-		logging.Error("FRONTEND", "Failed to start backend process:", err)
-		os.Exit(1)
+		logging.Error("FRONTEND", "Failed to start backend process")
+		panic(err)
 	}
 
 	if wait {
@@ -387,6 +425,7 @@ func startBackendProcess(reload bool, wait bool) {
 // waitForBackend waits for the backend to start.
 // Expects the RPC mutex to be locked.
 func waitForBackend() {
+	rpcWaiting.Store(true)
 	<-backendReady
 	backendReady = make(chan struct{})
 
@@ -396,6 +435,7 @@ func waitForBackend() {
 			rpcClient = client
 			rpcMutex.Unlock()
 
+			rpcWaiting.Store(false)
 			logging.Notice("FRONTEND", "Connected to backend")
 
 			return
@@ -447,7 +487,9 @@ func frontendListen(server serverInfo) {
 
 // handleConnection forwards packets between the frontend and backend
 func handleConnection(server serverInfo, conn net.Conn, index uint64) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	rpcMutex.Lock()
 	rpcBusyCount.Add(1)
@@ -555,7 +597,7 @@ func (r *RPCFrontendPacket) CloseConnection(args RPCFrontendPacket, _ *struct{})
 // RPCFrontendPacket.ReloadBackend is called by an external program to reload the backend
 func (r *RPCFrontendPacket) ReloadBackend(_ struct{}, _ *struct{}) error {
 	var stateUid string
-	r.ShutdownBackend(struct{}{}, &stateUid)
+	common.ShouldNotError(r.ShutdownBackend(struct{}{}, &stateUid))
 
 	err := rpcClient.Call("RPCPacket.Shutdown", stateUid, nil)
 	if err != nil && !strings.Contains(err.Error(), "An existing connection was forcibly closed by the remote host.") {
@@ -609,7 +651,7 @@ func (r *RPCFrontendPacket) VerifyState(uuid string, reload *bool) error {
 		// Close all connections
 		for _, server := range connections {
 			for index, conn := range server {
-				(*conn).Close()
+				_ = (*conn).Close()
 				delete(server, index)
 			}
 		}
