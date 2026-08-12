@@ -3,6 +3,9 @@ package common
 import (
 	"encoding/xml"
 	"os"
+	"wwfc/logging"
+
+	"github.com/linkdata/deadlock"
 )
 
 type Config struct {
@@ -46,12 +49,25 @@ type Config struct {
 	AllowConnectWithoutDeviceID bool   `xml:"allowConnectWithoutDeviceID"`
 
 	ServerName string `xml:"serverName,omitempty"`
+
+	EventReporting EventReportingConfig `xml:"eventReporting"`
 }
 
-var config Config
-var configLoaded bool
+type EventReportingConfig struct {
+	LogToDatabase bool                    `xml:"logToDatabase"`
+	Webhooks      []logging.WebhookConfig `xml:"discord>webhook"`
+}
+
+var (
+	config       Config
+	configLoaded bool
+	cmutex       = deadlock.Mutex{}
+)
 
 func GetConfig() Config {
+	cmutex.Lock()
+	defer cmutex.Unlock()
+
 	if configLoaded {
 		return config
 	}
@@ -128,5 +144,13 @@ func GetConfig() Config {
 		config.AllowMultipleDeviceIDs = "never"
 	}
 
+	configLoaded = true
+
 	return config
+}
+
+func (c Config) RegisterWebhooks() {
+	for _, webhook := range c.EventReporting.Webhooks {
+		webhook.RegisterWebhook()
+	}
 }

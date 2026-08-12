@@ -3,9 +3,7 @@ package gamestats
 import (
 	"math/rand"
 	"strconv"
-	"time"
 	"wwfc/common"
-	"wwfc/database"
 	"wwfc/gpcm"
 	"wwfc/logging"
 
@@ -63,21 +61,15 @@ func (g *GameStatsSession) authp(command common.GameSpyCommand) {
 		return
 	}
 
-	_, issueTime, userId, gsbrcd, _, _, _, _, _, _, _, err := common.UnmarshalNASAuthToken(authToken)
+	authTokenObj := common.NASAuthToken{}
+	err := authTokenObj.Unmarshal(authToken)
 	if err != nil {
 		logging.Error(g.ModuleName, "Error unmarshalling authtoken:", err.Error())
 		g.Write(errorCmd)
 		return
 	}
 
-	currentTime := time.Now().UTC()
-	if issueTime.Before(currentTime.Add(-10*time.Minute)) || issueTime.After(currentTime) {
-		logging.Error(g.ModuleName, "Authtoken has expired")
-		g.Write(errorCmd)
-		return
-	}
-
-	g.User, err = database.LoginUserToGameStats(pool, ctx, userId, gsbrcd)
+	g.User, err = db.LoginUserToGameStats(authTokenObj.UserID, common.NullTerminatedString(authTokenObj.GsbrCode[:]))
 	if err != nil {
 		logging.Error(g.ModuleName, "Error logging in user:", err.Error())
 		g.Write(errorCmd)

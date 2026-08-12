@@ -1,10 +1,13 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
+	"wwfc/common"
 	"wwfc/database"
 )
 
@@ -14,9 +17,18 @@ type PinfoRequestSpec struct {
 }
 
 type PinfoResponse struct {
-	User    database.User `json:"User"`
-	Success bool          `json:"Success"`
-	Error   string        `json:"Error"`
+	Player  PinfoPlayer `json:"player"`
+	Success bool        `json:"success"`
+	Error   string      `json:"error"`
+}
+
+type PinfoPlayer struct {
+	ProfileID uint32 `json:"profile_id"`
+	MiiName   string `json:"mii_name"`
+	MiiData   string `json:"mii_data"`
+	OpenHost  bool   `json:"open_host"`
+	Banned    bool   `json:"banned"`
+	DiscordID string `json:"discord_id"`
 }
 
 func HandlePinfo(w http.ResponseWriter, r *http.Request) {
@@ -79,28 +91,61 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 	realUser, ok := database.GetProfile(pool, ctx, req.ProfileID)
 	if !ok {
 		return PinfoResponse{
-			User:    database.User{},
 			Success: false,
 			Error:   "Failed to find user in the database",
 		}, http.StatusInternalServerError
 	}
 
+	fullAccess := apiSecret == "" || req.Secret == apiSecret
+
 	user := realUser
-	if apiSecret == "" || req.Secret != apiSecret {
+	if !fullAccess {
 		// Invalid or missing secret: return only the public-safe subset.
 		user = database.User{
-			ProfileId:    realUser.ProfileId,
-			Restricted:   realUser.Restricted,
-			BanReason:    realUser.BanReason,
-			OpenHost:     realUser.OpenHost,
-			LastInGameSn: realUser.LastInGameSn,
-			DiscordID:    realUser.DiscordID,
+			ProfileId:  realUser.ProfileId,
+			Restricted: realUser.Restricted,
+			OpenHost:   realUser.OpenHost,
+			DiscordID:  realUser.DiscordID,
 		}
 	}
 
+	miiName, miiData := getPinfoMiiData(realUser.ProfileId)
+
 	return PinfoResponse{
-		User:    user,
+		Player: PinfoPlayer{
+			ProfileID: user.ProfileId,
+			MiiName:   miiName,
+			MiiData:   miiData,
+			OpenHost:  user.OpenHost,
+			Banned:    user.Restricted,
+			DiscordID: user.DiscordID,
+		},
 		Success: true,
 		Error:   "",
 	}, http.StatusOK
+}
+
+func getPinfoMiiData(profileID uint32) (string, string) {
+	friendInfo := database.GetMKWFriendInfo(pool, ctx, profileID)
+	if friendInfo == "" {
+		return "", ""
+	}
+
+	binaryData, err := base64.StdEncoding.DecodeString(friendInfo)
+	if err != nil || len(binaryData) < 0x4C {
+		return "", ""
+	}
+
+	mii := common.RawMiiFromBytes(binaryData)
+	if mii.CalculateMiiCRC() != 0 {
+		return "", ""
+	}
+
+	mii = mii.ClearMiiInfo()
+	miiName, err := common.GetWideString(mii.Data[0x2:0x16], binary.BigEndian)
+	if err != nil {
+		miiName = ""
+	}
+
+	return miiName, base64.StdEncoding.EncodeToString(mii.Data[:])
 }

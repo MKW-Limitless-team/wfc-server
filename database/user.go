@@ -18,28 +18,19 @@ const (
 	UpdateUserTable         = `UPDATE users SET firstname = CASE WHEN $3 THEN $2 ELSE firstname END, lastname = CASE WHEN $5 THEN $4 ELSE lastname END, open_host = CASE WHEN $7 THEN $6 ELSE open_host END WHERE profile_id = $1`
 	UpdateUserProfileID     = `UPDATE users SET profile_id = $3 WHERE user_id = $1 AND gsbrcd = $2`
 	UpdateUserNGDeviceID    = `UPDATE users SET ng_device_id = $2 WHERE profile_id = $1`
-	GetUser                 = `SELECT user_id, gsbrcd, ng_device_id, email, unique_nick, firstname, lastname, has_ban, ban_reason, open_host, last_ingamesn, last_ip_address, discord_id, ban_moderator, ban_reason_hidden, ban_issued, ban_expires FROM users WHERE profile_id = $1`
+	GetUser                 = `SELECT users.user_id, users.gsbrcd, users.ng_device_id, users.email, users.unique_nick, users.firstname, users.lastname, users.has_ban, users.ban_reason, users.open_host, users.last_ingamesn, users.last_ip_address, player_data.discord_id, users.ban_moderator, users.ban_reason_hidden, users.ban_issued, users.ban_expires FROM users LEFT JOIN player_data ON player_data.profile_id = users.profile_id WHERE users.profile_id = $1`
 	ClearProfileQuery       = `DELETE FROM users WHERE profile_id = $1 RETURNING user_id, gsbrcd, email, unique_nick, firstname, lastname, open_host, last_ip_address, last_ingamesn`
 	DoesUserExist           = `SELECT EXISTS(SELECT 1 FROM users WHERE user_id = $1 AND gsbrcd = $2)`
 	IsProfileIDInUse        = `SELECT EXISTS(SELECT 1 FROM users WHERE profile_id = $1)`
 	DeleteUserSession       = `DELETE FROM sessions WHERE profile_id = $1`
-	GetUserProfileID        = `SELECT profile_id, ng_device_id, email, unique_nick, firstname, lastname, open_host, discord_id, last_ip_address FROM users WHERE user_id = $1 AND gsbrcd = $2`
+	GetUserProfileID        = `SELECT profile_id, ng_device_id, email, unique_nick, firstname, lastname, open_host, last_ip_address, allow_default_keys FROM users WHERE user_id = $1 AND gsbrcd = $2`
 	UpdateUserLastIPAddress = `UPDATE users SET last_ip_address = $2, last_ingamesn = $3 WHERE profile_id = $1`
-	UpdateDiscordID         = `UPDATE users SET discord_id = $2 WHERE profile_id = $1`
+	UpdateDiscordID         = `INSERT INTO player_data (profile_id, discord_id) VALUES ($1, $2) ON CONFLICT (profile_id) DO UPDATE SET discord_id = EXCLUDED.discord_id`
 	UpdateUserBan           = `UPDATE users SET has_ban = true, ban_issued = $2, ban_expires = $3, ban_reason = $4, ban_reason_hidden = $5, ban_moderator = $6, ban_tos = $7 WHERE profile_id = $1`
 	DisableUserBan          = `UPDATE users SET has_ban = false WHERE profile_id = $1`
 
 	GetMKWFriendInfoQuery    = `SELECT mariokartwii_friend_info FROM users WHERE profile_id = $1`
 	UpdateMKWFriendInfoQuery = `UPDATE users SET mariokartwii_friend_info = $2 WHERE profile_id = $1`
-)
-
-type LinkStage byte
-
-const (
-	LS_NONE LinkStage = iota
-	LS_STARTED
-	LS_FRIENDED
-	LS_FINISHED
 )
 
 type User struct {
@@ -57,6 +48,7 @@ type User struct {
 	OpenHost           bool
 	LastInGameSn       string
 	LastIPAddress      string
+	Created            bool
 	DiscordID          string
 	LinkStage          LinkStage
 	BanModerator       string
@@ -70,15 +62,15 @@ var (
 	ErrReservedProfileIDRange = errors.New("profile ID is in reserved range")
 )
 
-func (user *User) CreateUser(pool *pgxpool.Pool, ctx context.Context) error {
+func (c *Connection) CreateUser(user *User) error {
 	if user.ProfileId == 0 {
-		return pool.QueryRow(ctx, InsertUser, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick).Scan(&user.ProfileId)
+		return c.pool.QueryRow(c.ctx, InsertUser, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick).Scan(&user.ProfileId)
 	}
 
 	// Reserved profile ID check removed; all profile IDs allowed
 
 	var exists bool
-	err := pool.QueryRow(ctx, IsProfileIDInUse, user.ProfileId).Scan(&exists)
+	err := c.pool.QueryRow(c.ctx, IsProfileIDInUse, user.ProfileId).Scan(&exists)
 	if err != nil {
 		return err
 	}
@@ -87,7 +79,7 @@ func (user *User) CreateUser(pool *pgxpool.Pool, ctx context.Context) error {
 		return ErrProfileIDInUse
 	}
 
-	_, err = pool.Exec(ctx, InsertUserWithProfileID, user.ProfileId, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick)
+	_, err = c.pool.Exec(c.ctx, InsertUserWithProfileID, user.ProfileId, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick)
 	return err
 }
 
@@ -95,7 +87,7 @@ func (user *User) UpdateProfileID(pool *pgxpool.Pool, ctx context.Context, newPr
 	// Reserved profile ID check removed; all profile IDs allowed
 
 	var exists bool
-	err := pool.QueryRow(ctx, IsProfileIDInUse, newProfileId).Scan(&exists)
+	err := c.pool.QueryRow(c.ctx, IsProfileIDInUse, newProfileId).Scan(&exists)
 	if err != nil {
 		return err
 	}
@@ -104,7 +96,7 @@ func (user *User) UpdateProfileID(pool *pgxpool.Pool, ctx context.Context, newPr
 		return ErrProfileIDInUse
 	}
 
-	_, err = pool.Exec(ctx, UpdateUserProfileID, user.UserId, user.GsbrCode, newProfileId)
+	_, err = c.pool.Exec(c.ctx, UpdateUserProfileID, user.UserId, user.GsbrCode, newProfileId)
 	if err == nil {
 		user.ProfileId = newProfileId
 	}
@@ -128,16 +120,13 @@ func GetUniqueUserID() uint64 {
 	return uint64(rand.Int63n(0x80000000000))
 }
 
-func (user *User) UpdateProfile(pool *pgxpool.Pool, ctx context.Context, data map[string]string) {
+func (c *Connection) UpdateProfile(user *User, data map[string]string) {
 	firstName, firstNameExists := data["firstname"]
 	lastName, lastNameExists := data["lastname"]
 	openHost, openHostExists := data["wl:oh"]
-	openHostBool := false
-	if openHostExists && openHost != "0" {
-		openHostBool = true
-	}
+	openHostBool := openHostExists && openHost != "0"
 
-	_, err := pool.Exec(ctx, UpdateUserTable, user.ProfileId, firstName, firstNameExists, lastName, lastNameExists, openHostBool, openHostExists)
+	_, err := c.pool.Exec(c.ctx, UpdateUserTable, user.ProfileId, firstName, firstNameExists, lastName, lastNameExists, openHostBool, openHostExists)
 	if err != nil {
 		panic(err)
 	}
@@ -155,9 +144,9 @@ func (user *User) UpdateProfile(pool *pgxpool.Pool, ctx context.Context, data ma
 	}
 }
 
-func GetProfile(pool *pgxpool.Pool, ctx context.Context, profileId uint32) (User, bool) {
+func (c *Connection) GetProfile(profileId uint32) (User, bool) {
 	user := User{}
-	row := pool.QueryRow(ctx, GetUser, profileId)
+	row := c.pool.QueryRow(c.ctx, GetUser, profileId)
 
 	var firstName *string
 	var lastName *string
@@ -229,9 +218,9 @@ func GetProfile(pool *pgxpool.Pool, ctx context.Context, profileId uint32) (User
 	return user, true
 }
 
-func ClearProfile(pool *pgxpool.Pool, ctx context.Context, profileId uint32) (User, bool) {
+func (c *Connection) ClearProfile(profileId uint32) (User, bool) {
 	user := User{}
-	row := pool.QueryRow(ctx, ClearProfileQuery, profileId)
+	row := c.pool.QueryRow(c.ctx, ClearProfileQuery, profileId)
 	err := row.Scan(&user.UserId, &user.GsbrCode, &user.Email, &user.UniqueNick, &user.FirstName, &user.LastName, &user.OpenHost, &user.LastIPAddress, &user.LastInGameSn)
 
 	if err != nil {
@@ -242,29 +231,27 @@ func ClearProfile(pool *pgxpool.Pool, ctx context.Context, profileId uint32) (Us
 	return user, true
 }
 
-func BanUser(pool *pgxpool.Pool, ctx context.Context, profileId uint32, tos bool, length time.Duration, reason string, reasonHidden string, moderator string) bool {
-	_, err := pool.Exec(ctx, UpdateUserBan, profileId, time.Now().UTC(), time.Now().UTC().Add(length), reason, reasonHidden, moderator, tos)
+func (c *Connection) BanUser(profileId uint32, tos bool, length time.Duration, reason string, reasonHidden string, moderator string) bool {
+	_, err := c.pool.Exec(c.ctx, UpdateUserBan, profileId, time.Now().UTC(), time.Now().UTC().Add(length), reason, reasonHidden, moderator, tos)
 	return err == nil
 }
 
-func UnbanUser(pool *pgxpool.Pool, ctx context.Context, profileId uint32) bool {
-	_, err := pool.Exec(ctx, DisableUserBan, profileId)
+func (c *Connection) UnbanUser(profileId uint32) bool {
+	_, err := c.pool.Exec(c.ctx, DisableUserBan, profileId)
 	return err == nil
 }
 
-func GetMKWFriendInfo(pool *pgxpool.Pool, ctx context.Context, profileId uint32) string {
-	var info string
-	err := pool.QueryRow(ctx, GetMKWFriendInfoQuery, profileId).Scan(&info)
-	if err != nil {
-		return ""
+func (c *Connection) SearchUserBan(profileId uint32, ngDeviceId uint32, ipAddress string, lastIpAddress string) (
+	tos bool, issued time.Time, expires time.Time, reason string, bannedProfileId uint32, gsbrCode string, inGameName string, err error) {
+	row := c.pool.QueryRow(c.ctx, SearchUserBanInfo, ngDeviceId, profileId, ipAddress, lastIpAddress)
+	var hasBan bool
+	var bannedNgDeviceId []uint32
+	err = row.Scan(&hasBan, &tos, &issued, &expires, &reason, &bannedNgDeviceId, &bannedProfileId, &gsbrCode, &inGameName)
+	if err == nil && !hasBan {
+		err = errors.New("no ban found")
 	}
-
-	return info
-}
-
-func UpdateMKWFriendInfo(pool *pgxpool.Pool, ctx context.Context, profileId uint32, info string) {
-	_, err := pool.Exec(ctx, UpdateMKWFriendInfoQuery, profileId, info)
-	if err != nil {
-		panic(err)
+	if len(gsbrCode) > 4 {
+		gsbrCode = gsbrCode[:4]
 	}
+	return tos, issued, expires, reason, bannedProfileId, gsbrCode, inGameName, err
 }

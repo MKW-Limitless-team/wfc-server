@@ -1,13 +1,13 @@
 package race
 
 import (
+	"encoding/base64"
 	"encoding/xml"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"wwfc/common"
-	"wwfc/database"
 	"wwfc/logging"
 
 	"github.com/logrusorgru/aurora/v3"
@@ -72,30 +72,32 @@ const (
 	xmlNamespace    = "http://gamespy.net/RaceService/"
 )
 
-var marioKartWiiGameID = common.GetGameIDOrPanic("mariokartwii") // 1687
+var marioKartWiiGameID = 1687
 
-func handleNintendoRacingServiceRequest(moduleName string, responseWriter http.ResponseWriter, request *http.Request) {
-	soapActionHeader := request.Header.Get("SOAPAction")
+func handleNintendoRacingServiceRequest(w http.ResponseWriter, r *http.Request) {
+	moduleName := "RACE:RacingService:" + r.RemoteAddr
+
+	soapActionHeader := r.Header.Get("SOAPAction")
 	if soapActionHeader == "" {
 		logging.Error(moduleName, "No SOAPAction header")
-		writeErrorResponse(raceServiceResultParseError, responseWriter)
+		writeErrorResponse(raceServiceResultParseError, w)
 		return
 	}
 
 	slashIndex := strings.LastIndex(soapActionHeader, "/")
 	if slashIndex == -1 {
 		logging.Error(moduleName, "Invalid SOAPAction header")
-		writeErrorResponse(raceServiceResultParseError, responseWriter)
+		writeErrorResponse(raceServiceResultParseError, w)
 		return
 	}
 	quotationMarkIndex := strings.Index(soapActionHeader[slashIndex+1:], "\"")
 	if quotationMarkIndex == -1 {
 		logging.Error(moduleName, "Invalid SOAPAction header")
-		writeErrorResponse(raceServiceResultParseError, responseWriter)
+		writeErrorResponse(raceServiceResultParseError, w)
 		return
 	}
 
-	requestBody, err := io.ReadAll(request.Body)
+	requestBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		panic(err)
 	}
@@ -103,7 +105,7 @@ func handleNintendoRacingServiceRequest(moduleName string, responseWriter http.R
 	soapAction := soapActionHeader[slashIndex+1 : slashIndex+1+quotationMarkIndex]
 	switch soapAction {
 	case "GetTopTenRankings":
-		handleGetTopTenRankingsRequest(moduleName, responseWriter, requestBody)
+		handleGetTopTenRankingsRequest(moduleName, w, requestBody)
 
 	// TODO SubmitScores
 	default:
@@ -143,7 +145,7 @@ func handleGetTopTenRankingsRequest(moduleName string, responseWriter http.Respo
 		return
 	}
 
-	topTenRankings, err := database.GetMarioKartWiiTopTenRankings(pool, ctx, regionId, courseId)
+	topTenRankings, err := db.GetMarioKartWiiTopTenRankings(regionId, courseId)
 	if err != nil {
 		logging.Error(moduleName, "Failed to get the Top 10 rankings:", err)
 		writeErrorResponse(raceServiceResultDatabaseError, responseWriter)
@@ -153,11 +155,19 @@ func handleGetTopTenRankingsRequest(moduleName string, responseWriter http.Respo
 	numberOfRankings := len(topTenRankings)
 	data := make([]rankingsResponseData, 0, numberOfRankings)
 	for i, topTenRanking := range topTenRankings {
+		// Filter player info just in case
+		playerInfo, err := base64.StdEncoding.DecodeString(topTenRanking.PlayerInfo)
+		if err != nil {
+			panic(err)
+		}
+		miiData := common.RawMiiFromBytes(playerInfo).ClearMiiInfo().Data
+		playerInfo = append(miiData[:], playerInfo[len(miiData):]...)
+
 		rankingData := rankingsResponseRankingData{
 			OwnerID:  topTenRanking.PID,
 			Rank:     i + 1,
 			Time:     topTenRanking.Score,
-			UserData: topTenRanking.PlayerInfo,
+			UserData: base64.StdEncoding.EncodeToString(playerInfo),
 		}
 
 		responseData := rankingsResponseData{
@@ -204,5 +214,7 @@ func writeResponse(responseWriter http.ResponseWriter, rankingDataResponse ranki
 
 	responseWriter.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
 	responseWriter.Header().Set("Content-Type", "text/xml")
-	responseWriter.Write(responseBody)
+	if _, err := responseWriter.Write(responseBody); err != nil {
+		logging.Error("Failed to write response:", err)
+	}
 }

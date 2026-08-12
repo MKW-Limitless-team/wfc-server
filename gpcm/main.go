@@ -1,9 +1,7 @@
 package gpcm
 
 import (
-	"context"
 	"encoding/gob"
-	"fmt"
 	"os"
 	"strings"
 	"wwfc/common"
@@ -11,12 +9,11 @@ import (
 	"wwfc/logging"
 	"wwfc/qr2"
 
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/linkdata/deadlock"
 	"github.com/logrusorgru/aurora/v3"
-	"github.com/sasha-s/go-deadlock"
 )
 
-var ServerName = "gpcm"
+const ServerName = "gpcm"
 
 type GameSpySession struct {
 	ConnIndex           uint64
@@ -60,8 +57,8 @@ type GameSpySession struct {
 }
 
 var (
-	ctx  = context.Background()
-	pool *pgxpool.Pool
+	db database.Connection
+
 	// I would use a sync.Map instead of the map mutex combo, but this performs better.
 	sessions            = map[uint32]*GameSpySession{}
 	sessionsByConnIndex = map[uint64]*GameSpySession{}
@@ -77,19 +74,8 @@ func StartServer(reload bool) {
 	config := common.GetConfig()
 
 	// Start SQL
-	dbString := fmt.Sprintf("postgres://%s:%s@%s/%s", config.Username, config.Password, config.DatabaseAddress, config.DatabaseName)
-	dbConf, err := pgxpool.ParseConfig(dbString)
-	if err != nil {
-		panic(err)
-	}
-
-	pool, err = pgxpool.ConnectConfig(ctx, dbConf)
-	if err != nil {
-		panic(err)
-	}
-
-	database.UpdateTables(pool, ctx)
-	qr2.SetTrackDB(pool, ctx)
+	db = database.Start(config)
+	db.UpdateTables()
 
 	allowDefaultDolphinKeys = config.AllowDefaultDolphinKeys
 
@@ -102,6 +88,17 @@ func StartServer(reload bool) {
 
 		logging.Notice("GPCM", "Loaded", aurora.Cyan(len(sessions)), "sessions")
 	}
+
+	db.RegisterEvents(config, []string{
+		"profile_created",
+		"logged_in",
+		"logged_out",
+		"received_login_info",
+		"device_authenticated",
+		"reported_bad_packet",
+		"reported_stall",
+		"gpcm_returned_error",
+	})
 }
 
 func Shutdown() {
@@ -109,6 +106,9 @@ func Shutdown() {
 	if err != nil {
 		logging.Error("GPCM", "Failed to save state:", err)
 	}
+
+	db.Close()
+
 	logging.Notice("GPCM", "Saved", aurora.Cyan(len(sessions)), "sessions")
 }
 
@@ -130,6 +130,10 @@ func CloseConnection(index uint64) {
 			qr2.ProcessGPStatusUpdate(session.User.ProfileId, session.QR2IP, "0")
 		}
 		session.sendLogoutStatus()
+
+		logging.Event("logged_out", map[string]any{
+			"profile_id": session.User.ProfileId,
+		})
 	}
 
 	mutex.Lock()
@@ -164,7 +168,11 @@ func NewConnection(index uint64, address string) {
 			"id":        "1",
 		},
 	})
-	common.SendPacket(ServerName, index, []byte(payload))
+	if err := common.SendPacket(ServerName, index, []byte(payload)); err != nil {
+		logging.Error("GPCM", "Failed to send login challenge packet:", err)
+		_ = common.CloseConnection(ServerName, index)
+		return
+	}
 
 	logging.Notice(session.ModuleName, "Connection established from", address)
 
@@ -180,6 +188,7 @@ func HandlePacket(index uint64, data []byte) {
 
 	if session == nil {
 		logging.Error("GPCM", "Cannot find session for this connection index:", aurora.Cyan(index))
+		_ = common.CloseConnection(ServerName, index)
 		return
 	}
 
@@ -233,7 +242,7 @@ func HandlePacket(index uint64, data []byte) {
 	// Commands must be handled in a certain order, not in the order supplied by the client
 
 	commands = session.handleCommand("ka", commands, func(command common.GameSpyCommand) {
-		common.SendPacket(ServerName, session.ConnIndex, []byte(`\ka\\final\`))
+		_ = common.SendPacket(ServerName, session.ConnIndex, []byte(`\ka\\final\`))
 	})
 	commands = session.handleCommand("login", commands, session.login)
 	commands = session.handleCommand("wl:exlogin", commands, session.exLogin)
@@ -273,8 +282,11 @@ func HandlePacket(index uint64, data []byte) {
 			data = append(data, session.WriteBuffer[c])
 		}
 
-		common.SendPacket(ServerName, session.ConnIndex, data)
-		session.WriteBuffer = ""
+		if err := common.SendPacket(ServerName, session.ConnIndex, data); err != nil {
+			logging.Error(session.ModuleName, "Failed to send response packet:", err)
+		} else {
+			session.WriteBuffer = ""
+		}
 	}
 }
 
@@ -318,7 +330,7 @@ func saveState() error {
 	defer mutex.Unlock()
 
 	err = encoder.Encode(sessions)
-	file.Close()
+	common.ShouldNotError(file.Close())
 	return err
 }
 
@@ -334,7 +346,7 @@ func loadState() error {
 	defer mutex.Unlock()
 
 	err = decoder.Decode(&sessions)
-	file.Close()
+	common.ShouldNotError(file.Close())
 	if err != nil {
 		return err
 	}
