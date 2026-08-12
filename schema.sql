@@ -268,5 +268,16 @@ CREATE TABLE IF NOT EXISTS public.events (
 );
 
 --
+-- Name: vr_br; Type: TABLE; Schema: public; Owner: wiilink
+--
+
+CREATE TABLE IF NOT EXISTS public.vr_br (
+    profile_id bigint PRIMARY KEY REFERENCES public.users(profile_id),
+    vr bigint DEFAULT 9999,
+    br bigint DEFAULT 9999,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+--
 -- PostgreSQL database dump complete
 --

@@ -51,6 +51,23 @@ type Config struct {
 	ServerName string `xml:"serverName,omitempty"`
 
 	EventReporting EventReportingConfig `xml:"eventReporting"`
+
+	VRBR VRBRConfig `xml:"vrbr"`
+}
+
+type VRBRConfig struct {
+	MaxVRLimit       int     `xml:"maxVrLimit"`
+	MaxBRLimit       int     `xml:"maxBrLimit"`
+	MaxVRGain        int     `xml:"maxVrGain"`
+	MaxBRGain        int     `xml:"maxBrGain"`
+	MaxVRLoss        int     `xml:"maxVrLoss"`
+	MaxBRLoss        int     `xml:"maxBrLoss"`
+	VRGainMultiplier float64 `xml:"vrGainMultiplier"`
+	BRGainMultiplier float64 `xml:"brGainMultiplier"`
+	VRLossMultiplier float64 `xml:"vrLossMultiplier"`
+	BRLossMultiplier float64 `xml:"brLossMultiplier"`
+	DefaultVR        int     `xml:"defaultVr"`
+	DefaultBR        int     `xml:"defaultBr"`
 }
 
 type EventReportingConfig struct {

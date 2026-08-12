@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math/rand"
 	"time"
+	"wwfc/common"
 )
 
 const (
@@ -55,8 +56,13 @@ var (
 )
 
 func (c *Connection) CreateUser(user *User) error {
+	config := common.GetConfig()
 	if user.ProfileId == 0 {
-		return c.pool.QueryRow(c.ctx, InsertUser, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick).Scan(&user.ProfileId)
+		err := c.pool.QueryRow(c.ctx, InsertUser, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick).Scan(&user.ProfileId)
+		if err != nil {
+			return err
+		}
+		return c.InitializeVRBRForProfile(user.ProfileId, config.VRBR.DefaultVR, config.VRBR.DefaultBR)
 	}
 
 	// Reserved profile ID check removed; all profile IDs allowed
@@ -72,7 +78,10 @@ func (c *Connection) CreateUser(user *User) error {
 	}
 
 	_, err = c.pool.Exec(c.ctx, InsertUserWithProfileID, user.ProfileId, user.UserId, user.GsbrCode, "", user.NgDeviceId, user.Email, user.UniqueNick)
-	return err
+	if err != nil {
+		return err
+	}
+	return c.InitializeVRBRForProfile(user.ProfileId, config.VRBR.DefaultVR, config.VRBR.DefaultBR)
 }
 
 func (c *Connection) UpdateProfileID(user *User, newProfileId uint32) error {

@@ -36,4 +36,15 @@ func (c *Connection) UpdateTables() {
 		ADD IF NOT EXISTS upload_time timestamp without time zone;
 	
 	`)
+
+	_, _ = c.pool.Exec(c.ctx, `
+
+	CREATE TABLE IF NOT EXISTS vr_br (
+	    profile_id bigint PRIMARY KEY REFERENCES users(profile_id),
+	    vr bigint DEFAULT 9999,
+	    br bigint DEFAULT 9999,
+	    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+	);
+
+	`)
 }

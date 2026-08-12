@@ -397,6 +397,12 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			motdByteArray := common.UTF16ToByteArray(motdUTF16)
 			otherValues["wl:motd"] = common.Base64DwcEncoding.EncodeToString(motdByteArray)
 		}
+
+		// Send the server-authoritative VR/BR to the client on login
+		if vrbr, ok := db.GetVRBR(g.User.ProfileId); ok {
+			otherValues["wl:vr"] = strconv.Itoa(vrbr.VR)
+			otherValues["wl:br"] = strconv.Itoa(vrbr.BR)
+		}
 	}
 
 	payload := common.CreateGameSpyMessage(common.GameSpyCommand{

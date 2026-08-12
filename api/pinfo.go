@@ -30,6 +30,8 @@ type PinfoPlayer struct {
 	OpenHost  bool   `json:"open_host"`
 	Banned    bool   `json:"banned"`
 	DiscordID string `json:"discord_id"`
+	VR        int    `json:"vr"`
+	BR        int    `json:"br"`
 }
 
 func HandlePinfo(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +121,12 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 		miiName, miiData = getPinfoMiiData(realUser.ProfileId)
 	}
 
+	vr, br := 9999, 9999
+	if vrbr, ok := db.GetVRBR(realUser.ProfileId); ok {
+		vr = vrbr.VR
+		br = vrbr.BR
+	}
+
 	return PinfoResponse{
 		Player: PinfoPlayer{
 			ProfileID: user.ProfileId,
@@ -127,6 +135,8 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 			OpenHost:  user.OpenHost,
 			Banned:    user.Restricted,
 			DiscordID: user.DiscordID,
+			VR:        vr,
+			BR:        br,
 		},
 		Success: true,
 		Error:   "",
