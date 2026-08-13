@@ -398,11 +398,25 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			otherValues["wl:motd"] = common.Base64DwcEncoding.EncodeToString(motdByteArray)
 		}
 
-		// Send the server-authoritative VR/BR to the client on login
-		if vrbr, ok := db.GetVRBR(g.User.ProfileId); ok {
-			otherValues["wl:vr"] = strconv.Itoa(vrbr.VR)
-			otherValues["wl:br"] = strconv.Itoa(vrbr.BR)
+		// Send the server-authoritative VR/BR to the client on login. Always
+		// send values so the payload can overwrite the local LicenseMgr copy.
+		// If the player has no vr_br row yet (e.g. an existing player logging
+		// in for the first time after this feature was added), initialize it
+		// with the configured defaults.
+		vrbr, ok := db.GetVRBR(g.User.ProfileId)
+		if !ok {
+			config := common.GetConfig()
+			_ = db.InitializeVRBRForProfile(g.User.ProfileId, config.VRBR.DefaultVR, config.VRBR.DefaultBR)
+			vrbr = database.VRBR{
+				ProfileId: g.User.ProfileId,
+				VR:        config.VRBR.DefaultVR,
+				BR:        config.VRBR.DefaultBR,
+			}
+			logging.Info(g.ModuleName, "VRBR: initialized new row for profile", g.User.ProfileId, "with defaults", config.VRBR.DefaultVR, config.VRBR.DefaultBR)
 		}
+		otherValues["wl:vr"] = strconv.Itoa(vrbr.VR)
+		otherValues["wl:br"] = strconv.Itoa(vrbr.BR)
+		logging.Info(g.ModuleName, "VRBR: sending wl:vr=", vrbr.VR, "wl:br=", vrbr.BR, "to profile", g.User.ProfileId)
 	}
 
 	payload := common.CreateGameSpyMessage(common.GameSpyCommand{

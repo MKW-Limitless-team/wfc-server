@@ -126,6 +126,7 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 		vr = vrbr.VR
 		br = vrbr.BR
 	}
+	logging.Info("API", "pinfo: profile", realUser.ProfileId, "vr=", vr, "br=", br)
 
 	return PinfoResponse{
 		Player: PinfoPlayer{
