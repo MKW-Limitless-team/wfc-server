@@ -115,8 +115,17 @@ func (g *GameSpySession) handleWWFCReport(command common.GameSpyCommand) {
 				"Kart:", aurora.Cyan(strconv.Itoa(player.KartId)),
 				"Count:", aurora.Cyan(strconv.Itoa(player.PlayerCount)))
 
-			// Hand off to qr2 for processing
-			qr2.ProcessMKWRaceResult(g.User.ProfileId, player.Pid, player.FinishTimeMs, player.CharacterId, player.KartId, player.PlayerCount)
+			// Hand off to qr2 for processing. It returns the updated
+			// server-authoritative VR/BR so we can push them to the client.
+			newVR, newBR, updated := qr2.ProcessMKWRaceResult(g.User.ProfileId, player.Pid, player.FinishTimeMs, player.CharacterId, player.KartId, player.PlayerCount)
+			if updated && g.GameName == "mariokartwii" {
+				msg := "\\wl:vr\\" + strconv.Itoa(newVR) + "\\wl:br\\" + strconv.Itoa(newBR) + "\\final\\"
+				if err := common.SendPacket(ServerName, g.ConnIndex, []byte(msg)); err != nil {
+					logging.Error(g.ModuleName, "Failed to send VR/BR update to client:", err)
+				} else {
+					logging.Info(g.ModuleName, "Sent VR/BR update to client:", newVR, newBR)
+				}
+			}
 
 		case "wl:mkw_race_start_time":
 			serverTime := time.Now().UnixMilli()

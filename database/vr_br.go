@@ -1,11 +1,13 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"time"
 	"wwfc/common"
 
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 type VRBR struct {
@@ -127,4 +129,52 @@ func (c *Connection) InitializeVRBRForProfile(profileId uint32, defaultVR int, d
 	// Initialize new profile with the configured default VR/BR
 	_, err := c.pool.Exec(c.ctx, InsertVRBRQuery, profileId, defaultVR, defaultBR)
 	return err
+}
+
+// ApplyVRBRChangeForPool applies a VR/BR delta to a player using a raw pool,
+// enforcing the configured gain/loss limits, multipliers, and absolute maximum
+// limits. This mirrors ApplyVRBRChange but works with a *pgxpool.Pool so it can
+// be called from packages that only hold a pool reference (e.g. qr2). It returns
+// the new VR/BR values so callers can push the update back to the client.
+func ApplyVRBRChangeForPool(pool *pgxpool.Pool, ctx context.Context, profileId uint32, vrDelta int, brDelta int) (int, int, error) {
+	config := common.GetConfig()
+	vrbr := config.VRBR
+
+	vrDelta = clampDelta(vrDelta, vrbr.MaxVRGain, vrbr.MaxVRLoss, vrbr.VRGainMultiplier, vrbr.VRLossMultiplier)
+	brDelta = clampDelta(brDelta, vrbr.MaxBRGain, vrbr.MaxBRLoss, vrbr.BRGainMultiplier, vrbr.BRLossMultiplier)
+
+	// Fetch current values.
+	var currentVR, currentBR int
+	err := pool.QueryRow(ctx, GetVRBRQuery, profileId).Scan(&currentVR, &currentBR)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No entry yet; initialize with defaults then apply the delta.
+			if _, err := pool.Exec(ctx, InsertVRBRQuery, profileId, vrbr.DefaultVR, vrbr.DefaultBR); err != nil {
+				return 0, 0, err
+			}
+			currentVR = vrbr.DefaultVR
+			currentBR = vrbr.DefaultBR
+		} else {
+			return 0, 0, err
+		}
+	}
+
+	newVR := currentVR + vrDelta
+	newBR := currentBR + brDelta
+
+	if newVR > vrbr.MaxVRLimit {
+		newVR = vrbr.MaxVRLimit
+	}
+	if newBR > vrbr.MaxBRLimit {
+		newBR = vrbr.MaxBRLimit
+	}
+	if newVR < 0 {
+		newVR = 0
+	}
+	if newBR < 0 {
+		newBR = 0
+	}
+
+	_, err = pool.Exec(ctx, UpdateVRBRQuery, profileId, newVR, newBR)
+	return newVR, newBR, err
 }

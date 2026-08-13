@@ -653,33 +653,34 @@ func ProcessMKWSelectRecord(profileId uint32, key string, value string) {
 
 }
 
-func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, characterId int, kartId int, playerCount int) {
+func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, characterId int, kartId int, playerCount int) (int, int, bool) {
 	moduleName := "QR2:MKWRaceResult:" + strconv.FormatUint(uint64(profileId), 10)
+	noUpdate := func() (int, int, bool) { return 0, 0, false }
 
 	mutex.Lock()
 	login := logins[profileId]
 	if login == nil {
 		mutex.Unlock()
 		logging.Warn(moduleName, "Received race result from non-existent profile ID", aurora.Cyan(profileId))
-		return
+		return noUpdate()
 	}
 
 	session := login.session
 	if session == nil {
 		mutex.Unlock()
 		logging.Warn(moduleName, "Received race result from profile ID", aurora.Cyan(profileId), "but no session exists")
-		return
+		return noUpdate()
 	}
 	mutex.Unlock()
 
 	group := session.groupPointer
 	if group == nil {
-		return
+		return noUpdate()
 	}
 
 	if group.MKWRaceNumber == 0 {
 		logging.Error(moduleName, "Received race result but no races have been started")
-		return
+		return noUpdate()
 	}
 
 	// Calculate delta using start/finish times
@@ -770,7 +771,7 @@ func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, cha
 		if existingResult.ProfileID == profileId {
 			logging.Info(moduleName, "Ignored duplicate race result for profile", aurora.BrightCyan(strconv.FormatUint(uint64(profileId), 10)),
 				"Race #:", aurora.Cyan(strconv.Itoa(raceNumber)))
-			return
+			return noUpdate()
 		}
 	}
 
@@ -780,10 +781,56 @@ func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, cha
 		logging.Error(moduleName, "Failed to track race result:", err)
 	}
 
+	// Server-authoritative VR/BR: determine this player's placement among the
+	// results collected for this race, then apply the VR/BR delta.
+	placement := 1
+	results := raceResults[group.GroupName][raceNumber]
+	for _, r := range results {
+		if r.ProfileID != profileId && r.FinishTime < raceResultData.FinishTime {
+			placement++
+		}
+	}
+	vrDelta := calculateVRDelta(placement, int(raceResultData.PlayerCount))
+	newVR, newBR, err := database.ApplyVRBRChangeForPool(trackPool, trackCtx, profileId, vrDelta, vrDelta)
+	if err != nil {
+		logging.Error(moduleName, "Failed to apply VR/BR change:", err)
+		return noUpdate()
+	}
+	logging.Info(moduleName, "Applied VR/BR delta", aurora.Cyan(strconv.Itoa(vrDelta)),
+		"for placement", aurora.Cyan(strconv.Itoa(placement)),
+		"of", aurora.Cyan(strconv.Itoa(int(raceResultData.PlayerCount))),
+		"new VR/BR:", aurora.Cyan(strconv.Itoa(newVR)), aurora.Cyan(strconv.Itoa(newBR)))
+
 	logging.Info(moduleName, "Stored race result for profile", aurora.BrightCyan(strconv.FormatUint(uint64(profileId), 10)),
 		"Race #:", aurora.Cyan(strconv.Itoa(raceNumber)),
 		"Course:", aurora.Cyan(strconv.Itoa(group.MKWCourseID)),
 		"Delta:", aurora.Cyan(strconv.Itoa(delta)))
+
+	return newVR, newBR, true
+}
+
+// calculateVRDelta maps a race placement to a VR/BR delta using the configured
+// gain/loss limits. 1st place gains the most, last place loses the most, with a
+// linear interpolation in between. The result stays within [-maxLoss, +maxGain].
+func calculateVRDelta(placement int, playerCount int) int {
+	config := common.GetConfig()
+	vrbr := config.VRBR
+
+	if playerCount <= 1 {
+		return 0
+	}
+
+	pos := placement - 1
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= playerCount {
+		pos = playerCount - 1
+	}
+
+	delta := float64(vrbr.MaxVRGain) -
+		float64(vrbr.MaxVRGain+vrbr.MaxVRLoss)*float64(pos)/float64(playerCount-1)
+	return int(delta)
 }
 
 func GetRaceResultsForGroup(groupName string) map[int][]RaceResult {
