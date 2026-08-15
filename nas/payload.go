@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 	"wwfc/logging"
 
@@ -175,16 +176,36 @@ func handlePayloadRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Generate the salt hash
-		saltHashData := "payload?g=" + query["g"][0] + "&s=" + query["s"][0]
-
-		hashCtx := sha256.New()
-		_, err = hashCtx.Write([]byte(saltHashData))
-		if err != nil {
-			panic(err)
+		// Generate the salt hash. Older clients hash only g+s; newer clients
+		// hash the raw payload query, excluding h, so keep the original order.
+		rawQueryParts := strings.Split(u.RawQuery, "&")
+		rawQueryWithoutHash := rawQueryParts[:0]
+		for _, part := range rawQueryParts {
+			if strings.HasPrefix(part, "h=") {
+				continue
+			}
+			rawQueryWithoutHash = append(rawQueryWithoutHash, part)
 		}
 
-		saltHash := hashCtx.Sum(nil)
+		saltHashInputs := []string{
+			"payload?g=" + query["g"][0] + "&s=" + query["s"][0],
+			"payload?" + strings.Join(rawQueryWithoutHash, "&"),
+		}
+
+		var saltHash []byte
+		for _, saltHashData := range saltHashInputs {
+			hashCtx := sha256.New()
+			_, err = hashCtx.Write([]byte(saltHashData))
+			if err != nil {
+				panic(err)
+			}
+
+			saltHash = hashCtx.Sum(nil)
+			if bytes.Equal(saltHashTestData, saltHash[:4]) {
+				break
+			}
+		}
+
 		if !bytes.Equal(saltHashTestData, saltHash[:4]) {
 			logging.Error(moduleName, "Salt hash mismatch")
 			return

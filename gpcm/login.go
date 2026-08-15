@@ -398,21 +398,32 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			otherValues["wl:motd"] = common.Base64DwcEncoding.EncodeToString(motdByteArray)
 		}
 
-		// Send the server-authoritative VR/BR to the client on login. Always
-		// send values so the payload can overwrite the local LicenseMgr copy.
-		// If the player has no vr_br row yet (e.g. an existing player logging
-		// in for the first time after this feature was added), initialize it
-		// with the configured defaults.
+		// Send the server-authoritative VR/BR to the client on login.
 		vrbr, ok := db.GetVRBR(g.User.ProfileId)
 		if !ok {
 			config := common.GetConfig()
-			_ = db.InitializeVRBRForProfile(g.User.ProfileId, config.VRBR.DefaultVR, config.VRBR.DefaultBR)
+			initVR, initBR := seedLocalVRBR(command.OtherValues, config.VRBR.DefaultVR, config.VRBR.DefaultBR)
+
+			_ = db.InitializeVRBRForProfile(g.User.ProfileId, initVR, initBR)
 			vrbr = database.VRBR{
-				ProfileId: g.User.ProfileId,
-				VR:        config.VRBR.DefaultVR,
-				BR:        config.VRBR.DefaultBR,
+				VR: initVR,
+				BR: initBR,
 			}
-			logging.Info(g.ModuleName, "VRBR: initialized new row for profile", g.User.ProfileId, "with defaults", config.VRBR.DefaultVR, config.VRBR.DefaultBR)
+			logging.Info(g.ModuleName, "VRBR: initialised new row for profile", g.User.ProfileId, "with", initVR, initBR)
+		} else if g.User.Created {
+			// CreateUser initialises vr_br with defaults. On first login, prefer
+			// the player's local values (if provided) so migration is seamless.
+			seedVR, seedBR := seedLocalVRBR(command.OtherValues, vrbr.VR, vrbr.BR)
+
+			if seedVR != vrbr.VR || seedBR != vrbr.BR {
+				if err := db.SetVRBR(g.User.ProfileId, seedVR, seedBR); err != nil {
+					logging.Warn(g.ModuleName, "VRBR: failed to seed from local values:", err)
+				} else {
+					vrbr.VR = seedVR
+					vrbr.BR = seedBR
+					logging.Info(g.ModuleName, "VRBR: seeded first-login row for profile", g.User.ProfileId, "with", seedVR, seedBR)
+				}
+			}
 		}
 		otherValues["wl:vr"] = strconv.Itoa(vrbr.VR)
 		otherValues["wl:br"] = strconv.Itoa(vrbr.BR)
@@ -439,6 +450,33 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 			"ip_address":   g.RemoteAddr,
 		},
 	)
+}
+
+// seedLocalVRBR returns a player's starting VR/BR, preferring the local values
+// sent by the client and clamping anything at or above 10000 to 5000.
+func seedLocalVRBR(otherValues map[string]string, fallbackVR int, fallbackBR int) (int, int) {
+	vr := fallbackVR
+	br := fallbackBR
+
+	if localVRStr, ok := otherValues["wl:local_vr"]; ok {
+		if v, err := strconv.Atoi(localVRStr); err == nil && v > 0 {
+			vr = v
+		}
+	}
+	if localBRStr, ok := otherValues["wl:local_br"]; ok {
+		if v, err := strconv.Atoi(localBRStr); err == nil && v > 0 {
+			br = v
+		}
+	}
+
+	if vr >= 10000 {
+		vr = 5000
+	}
+	if br >= 10000 {
+		br = 5000
+	}
+
+	return vr, br
 }
 
 func (g *GameSpySession) exLogin(command common.GameSpyCommand) {

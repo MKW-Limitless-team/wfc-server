@@ -51,19 +51,22 @@ type RaceResult struct {
 	Delta         int
 }
 
+// VRBRResult holds the new VR/BR for a player after a race is finalised.
+type VRBRResult struct {
+	VR int
+	BR int
+}
+
 var raceResults = map[string]map[int][]RaceResult{}  // GroupName -> RaceNumber -> []RaceResult
 var racePlayers = map[string]map[uint32]PlayerInfo{} // GroupName -> ProfileID -> historical PlayerInfo
 
-// Timing storage for delta calculation using start/finish times
-var raceStartTimings = map[uint32]struct {
-	ClientTime int64
-	ServerTime int64
-}{}
+// Tracks whether a race's results have been finalised (rating applied).
+var raceFinalized = map[string]map[int]bool{} // GroupName -> RaceNumber -> finalized
 
-var raceFinishTimings = map[uint32]struct {
-	ClientTime int64
-	ServerTime int64
-}{}
+// OnRaceFinalized is set by the gpcm package to push VR/BR updates to clients.
+var OnRaceFinalized func(map[uint32]VRBRResult)
+
+const raceFinalizeTimeout = 60 * time.Second
 
 var groups = map[string]*Group{}
 
@@ -367,22 +370,6 @@ func CheckGPReservationAllowed(senderIP uint64, senderPid uint32, destPid uint32
 	return checkReservationAllowed(moduleName, from, to, joinType)
 }
 
-// StoreRaceStartTime stores the start timing data for delta calculation
-func StoreRaceStartTime(profileId uint32, clientTime, serverTime int64) {
-	raceStartTimings[profileId] = struct {
-		ClientTime int64
-		ServerTime int64
-	}{ClientTime: clientTime, ServerTime: serverTime}
-}
-
-// StoreRaceFinishTime stores the finish timing data for delta calculation
-func StoreRaceFinishTime(profileId uint32, clientTime, serverTime int64) {
-	raceFinishTimings[profileId] = struct {
-		ClientTime int64
-		ServerTime int64
-	}{ClientTime: clientTime, ServerTime: serverTime}
-}
-
 func ProcessNATNEGReport(result byte, ip1 string, ip2 string) {
 	moduleName := "QR2:NATNEGReport"
 
@@ -653,184 +640,194 @@ func ProcessMKWSelectRecord(profileId uint32, key string, value string) {
 
 }
 
-func ProcessMKWRaceResult(profileId uint32, playerPid int, finishTimeMs int, characterId int, kartId int, playerCount int) (int, int, bool) {
-	moduleName := "QR2:MKWRaceResult:" + strconv.FormatUint(uint64(profileId), 10)
-	noUpdate := func() (int, int, bool) { return 0, 0, false }
+func ProcessMKWFinishTime(profileId uint32, finishTimeMs uint32, deltaMs int32) map[uint32]VRBRResult {
+	moduleName := "QR2:MKWFinishTime:" + strconv.FormatUint(uint64(profileId), 10)
 
 	mutex.Lock()
 	login := logins[profileId]
 	if login == nil {
 		mutex.Unlock()
-		logging.Warn(moduleName, "Received race result from non-existent profile ID", aurora.Cyan(profileId))
-		return noUpdate()
+		logging.Warn(moduleName, "Received finish time from non-existent profile ID", aurora.Cyan(profileId))
+		return nil
 	}
-
 	session := login.session
 	if session == nil {
 		mutex.Unlock()
-		logging.Warn(moduleName, "Received race result from profile ID", aurora.Cyan(profileId), "but no session exists")
-		return noUpdate()
+		logging.Warn(moduleName, "Received finish time from profile ID", aurora.Cyan(profileId), "but no session exists")
+		return nil
 	}
-	mutex.Unlock()
-
 	group := session.groupPointer
 	if group == nil {
-		return noUpdate()
-	}
-
-	if group.MKWRaceNumber == 0 {
-		logging.Error(moduleName, "Received race result but no races have been started")
-		return noUpdate()
-	}
-
-	// Calculate delta using start/finish times
-	var delta int
-	if startTiming, startExists := raceStartTimings[profileId]; startExists {
-		if finishTiming, finishExists := raceFinishTimings[profileId]; finishExists {
-			clientElapsedTime := finishTiming.ClientTime - startTiming.ClientTime
-			serverElapsedTime := finishTiming.ServerTime - startTiming.ServerTime
-			delta = int(serverElapsedTime - clientElapsedTime)
-
-			logging.Info(moduleName, "Delta calculated:", aurora.Cyan(strconv.Itoa(delta)),
-				"Client elapsed:", aurora.Cyan(strconv.FormatInt(clientElapsedTime, 10)),
-				"Server elapsed:", aurora.Cyan(strconv.FormatInt(serverElapsedTime, 10)))
-		} else {
-			logging.Warn(moduleName, "Missing finish timing data for profile", aurora.Cyan(strconv.FormatUint(uint64(profileId), 10)))
-		}
-	} else {
-		logging.Warn(moduleName, "Missing start timing data for profile", aurora.Cyan(strconv.FormatUint(uint64(profileId), 10)))
-	}
-
-	// Convert race result data to internal format
-	raceResultData := RaceResult{
-		ProfileID:     profileId,
-		PlayerID:      playerPid,
-		FinishTime:    uint32(finishTimeMs),
-		CharacterID:   uint32(characterId),
-		VehicleID:     uint32(kartId),
-		PlayerCount:   uint32(playerCount),
-		CourseID:      group.MKWCourseID,
-		EngineClassID: group.MKWEngineClassID,
-		Delta:         delta,
-	}
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	if raceResults[group.GroupName] == nil {
-		raceResults[group.GroupName] = map[int][]RaceResult{}
-	}
-	if racePlayers[group.GroupName] == nil {
-		racePlayers[group.GroupName] = map[uint32]PlayerInfo{}
-	}
-
-	sortedJoinIndex := make([]string, 0, len(group.players))
-	rawPlayers := make(map[string]map[string]string, len(group.players))
-	for playerSession := range group.players {
-		mapData := map[string]string{}
-		for k, v := range playerSession.Data {
-			mapData[k] = v
-		}
-
-		if login := playerSession.login; login != nil {
-			mapData["+ingamesn"] = login.InGameName
-		} else {
-			mapData["+ingamesn"] = ""
-		}
-
-		joinIndex := mapData["+joinindex"]
-		rawPlayers[joinIndex] = mapData
-
-		myJoinIndex, _ := strconv.Atoi(joinIndex)
-		added := false
-		for i, existingJoinIndex := range sortedJoinIndex {
-			intJoinIndex, _ := strconv.Atoi(existingJoinIndex)
-			if intJoinIndex > myJoinIndex {
-				sortedJoinIndex = append(sortedJoinIndex, "")
-				copy(sortedJoinIndex[i+1:], sortedJoinIndex[i:])
-				sortedJoinIndex[i] = joinIndex
-				added = true
-				break
-			}
-		}
-		if !added {
-			sortedJoinIndex = append(sortedJoinIndex, joinIndex)
-		}
-	}
-
-	for joinIndex, rawPlayer := range rawPlayers {
-		profileID, err := strconv.ParseUint(rawPlayer["dwc_pid"], 10, 32)
-		if err != nil {
-			continue
-		}
-		racePlayers[group.GroupName][uint32(profileID)] = buildPlayerInfo(rawPlayer, sortedJoinIndex, joinIndex)
+		mutex.Unlock()
+		return nil
 	}
 
 	raceNumber := group.MKWRaceNumber
-	for _, existingResult := range raceResults[group.GroupName][raceNumber] {
-		if existingResult.ProfileID == profileId {
-			logging.Info(moduleName, "Ignored duplicate race result for profile", aurora.BrightCyan(strconv.FormatUint(uint64(profileId), 10)),
-				"Race #:", aurora.Cyan(strconv.Itoa(raceNumber)))
-			return noUpdate()
+	groupName := group.GroupName
+
+	if raceFinalized[groupName] == nil {
+		raceFinalized[groupName] = map[int]bool{}
+	}
+	if raceFinalized[groupName][raceNumber] {
+		mutex.Unlock()
+		return nil
+	}
+
+	if raceResults[groupName] == nil {
+		raceResults[groupName] = map[int][]RaceResult{}
+	}
+
+	results := raceResults[groupName][raceNumber]
+	found := false
+	for i := range results {
+		if results[i].ProfileID == profileId {
+			results[i].FinishTime = finishTimeMs
+			results[i].Delta = int(deltaMs)
+			found = true
+			break
 		}
 	}
+	if !found {
+		results = append(results, RaceResult{ProfileID: profileId, FinishTime: finishTimeMs, Delta: int(deltaMs)})
+		raceResults[groupName][raceNumber] = results
 
-	raceResults[group.GroupName][raceNumber] = append(raceResults[group.GroupName][raceNumber], raceResultData)
-
-	if err := database.IncrementTrackUsageForProfile(trackPool, trackCtx, profileId, int(raceResultData.CharacterID), int(raceResultData.VehicleID)); err != nil {
-		logging.Error(moduleName, "Failed to track race result:", err)
+		// Schedule a timeout to finalise the race if not all players report.
+		go func() {
+			time.Sleep(raceFinalizeTimeout)
+			mutex.Lock()
+			if raceFinalized[groupName] == nil || raceFinalized[groupName][raceNumber] {
+				mutex.Unlock()
+				return
+			}
+			raceFinalized[groupName][raceNumber] = true
+			results := raceResults[groupName][raceNumber]
+			mutex.Unlock()
+			ratings := finalizeRace(group, results)
+			if OnRaceFinalized != nil {
+				OnRaceFinalized(ratings)
+			}
+		}()
 	}
 
-	// Server-authoritative VR/BR: determine this player's placement among the
-	// results collected for this race, then apply the VR/BR delta.
-	placement := 1
-	results := raceResults[group.GroupName][raceNumber]
-	for _, r := range results {
-		if r.ProfileID != profileId && r.FinishTime < raceResultData.FinishTime {
-			placement++
-		}
+	if len(results) < len(group.players) {
+		mutex.Unlock()
+		return nil
 	}
-	vrDelta := calculateVRDelta(placement, int(raceResultData.PlayerCount))
-	newVR, newBR, err := database.ApplyVRBRChangeForPool(trackPool, trackCtx, profileId, vrDelta, vrDelta)
-	if err != nil {
-		logging.Error(moduleName, "Failed to apply VR/BR change:", err)
-		return noUpdate()
-	}
-	logging.Info(moduleName, "Applied VR/BR delta", aurora.Cyan(strconv.Itoa(vrDelta)),
-		"for placement", aurora.Cyan(strconv.Itoa(placement)),
-		"of", aurora.Cyan(strconv.Itoa(int(raceResultData.PlayerCount))),
-		"new VR/BR:", aurora.Cyan(strconv.Itoa(newVR)), aurora.Cyan(strconv.Itoa(newBR)))
 
-	logging.Info(moduleName, "Stored race result for profile", aurora.BrightCyan(strconv.FormatUint(uint64(profileId), 10)),
-		"Race #:", aurora.Cyan(strconv.Itoa(raceNumber)),
-		"Course:", aurora.Cyan(strconv.Itoa(group.MKWCourseID)),
-		"Delta:", aurora.Cyan(strconv.Itoa(delta)))
+	raceFinalized[groupName][raceNumber] = true
+	mutex.Unlock()
 
-	return newVR, newBR, true
+	return finalizeRace(group, results)
 }
 
-// calculateVRDelta maps a race placement to a VR/BR delta using the configured
-// gain/loss limits. 1st place gains the most, last place loses the most, with a
-// linear interpolation in between. The result stays within [-maxLoss, +maxGain].
-func calculateVRDelta(placement int, playerCount int) int {
+// finalizeRace computes and applies the vanilla pairwise VR rating for all
+// players in a race and returns the new VR/BR for each player.
+func finalizeRace(group *Group, results []RaceResult) map[uint32]VRBRResult {
+	moduleName := "QR2:MKWFinishTime:" + group.GroupName
 	config := common.GetConfig()
-	vrbr := config.VRBR
+	maxVR := int32(config.VRBR.MaxVRLimit)
 
-	if playerCount <= 1 {
-		return 0
+	ratings := map[uint32]int32{}
+	for _, r := range results {
+		vrbr, ok := database.GetVRBRForPool(trackPool, trackCtx, r.ProfileID)
+		if !ok {
+			ratings[r.ProfileID] = int32(config.VRBR.DefaultVR)
+		} else {
+			ratings[r.ProfileID] = int32(vrbr.VR)
+		}
 	}
 
-	pos := placement - 1
-	if pos < 0 {
-		pos = 0
-	}
-	if pos >= playerCount {
-		pos = playerCount - 1
+	changes := map[uint32]int32{}
+	for i := range results {
+		for j := range results {
+			if i == j {
+				continue
+			}
+			a := results[i]
+			b := results[j]
+			if a.FinishTime < b.FinishTime {
+				changes[a.ProfileID] += calcPosPoints(ratings[a.ProfileID], ratings[b.ProfileID], maxVR)
+				changes[b.ProfileID] += calcNegPoints(ratings[b.ProfileID], ratings[a.ProfileID], maxVR)
+			} else if b.FinishTime < a.FinishTime {
+				changes[b.ProfileID] += calcPosPoints(ratings[b.ProfileID], ratings[a.ProfileID], maxVR)
+				changes[a.ProfileID] += calcNegPoints(ratings[a.ProfileID], ratings[b.ProfileID], maxVR)
+			}
+		}
 	}
 
-	delta := float64(vrbr.MaxVRGain) -
-		float64(vrbr.MaxVRGain+vrbr.MaxVRLoss)*float64(pos)/float64(playerCount-1)
-	return int(delta)
+	result := map[uint32]VRBRResult{}
+	for _, r := range results {
+		newVR, newBR, err := database.ApplyVRDeltaForPool(trackPool, trackCtx, r.ProfileID, int(changes[r.ProfileID]))
+		if err != nil {
+			logging.Error(moduleName, "Failed to apply VR delta:", err)
+			continue
+		}
+		result[r.ProfileID] = VRBRResult{VR: newVR, BR: newBR}
+		logging.Info(moduleName, "Applied VR delta", aurora.Cyan(strconv.Itoa(int(changes[r.ProfileID]))),
+			"for profile", aurora.Cyan(strconv.FormatUint(uint64(r.ProfileID), 10)),
+			"new VR/BR:", aurora.Cyan(strconv.Itoa(newVR)), aurora.Cyan(strconv.Itoa(newBR)))
+	}
+	return result
+}
+
+var splineTerms = []int32{0, 1, 8, 50, 125}
+
+func ratingCalc(x float32) float32 {
+	term := int32(-2)
+	var ret float32 = 0.0
+	for i := 0; i < 9; i++ {
+		termIdx := term
+		if term < 0 {
+			termIdx = 0
+		}
+		if term > 4 {
+			termIdx = 4
+		}
+		y := x - float32(term)
+		if y < 0 {
+			y = -y
+		}
+		var b float32 = 0.0
+		if y >= 0 {
+			if y < 1 {
+				b = (3*y*y*y - 6*y*y + 4) / 6
+			} else if y <= 2 {
+				y = y - 2
+				b = (-y * y * y) / 6
+			}
+		}
+		term++
+		ret += b * float32(splineTerms[termIdx])
+	}
+	return ret
+}
+
+func ratingCalcPoints(difference int32, isPos bool, maxRating int32) int32 {
+	clampDiff := maxRating - 1
+	if difference < -clampDiff {
+		difference = -clampDiff
+	}
+	if difference > clampDiff {
+		difference = clampDiff
+	}
+	if !isPos {
+		difference = -difference
+	}
+	uvar2 := difference + clampDiff
+	x := float32(uvar2) * (2.0 / float32(clampDiff))
+	points := ratingCalc(x)
+	if !isPos {
+		points = -points
+	}
+	return int32(points)
+}
+
+func calcPosPoints(winnerRating, loserRating int32, maxRating int32) int32 {
+	return ratingCalcPoints(loserRating-winnerRating, true, maxRating)
+}
+
+func calcNegPoints(loserRating, winnerRating int32, maxRating int32) int32 {
+	return ratingCalcPoints(winnerRating-loserRating, false, maxRating)
 }
 
 func GetRaceResultsForGroup(groupName string) map[int][]RaceResult {

@@ -38,6 +38,23 @@ func (c *Connection) Close() {
 	}
 }
 
+// GetPool returns the underlying pgx connection pool (for packages that need a
+// raw pool, e.g. qr2 for track/VR usage tracking).
+func (c *Connection) GetPool() *pgxpool.Pool {
+	if c == nil {
+		return nil
+	}
+	return c.pool
+}
+
+// GetContext returns the backing context.
+func (c *Connection) GetContext() context.Context {
+	if c == nil {
+		return nil
+	}
+	return c.ctx
+}
+
 func (c *Connection) GetProfile(profileId uint32) (User, bool) {
 	return c.getProfile(profileId)
 }

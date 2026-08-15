@@ -1,9 +1,8 @@
 package gpcm
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"strconv"
-	"time"
 	"wwfc/common"
 	"wwfc/logging"
 	"wwfc/qr2"
@@ -47,6 +46,15 @@ func (g *GameSpySession) handleWWFCReport(command common.GameSpyCommand) {
 				"sender_id":  profileId,
 			})
 
+		case "wl:bad_packet_data":
+			// Diagnostic record with the raw bytes of a packet that failed
+			// validation on the client.
+			logging.Warn(g.ModuleName, "Report bad packet data from", aurora.BrightCyan(strconv.FormatUint(uint64(g.User.ProfileId), 10)))
+			logging.Event("reported_bad_packet_data", map[string]any{
+				"profile_id": g.User.ProfileId,
+				"data":       value,
+			})
+
 		case "wl:stall":
 			profileId, err := strconv.ParseUint(value, 10, 32)
 			if err != nil {
@@ -87,77 +95,58 @@ func (g *GameSpySession) handleWWFCReport(command common.GameSpyCommand) {
 
 			qr2.ProcessMKWSelectRecord(g.User.ProfileId, key, value)
 
-		case "wl:mkw_race_result":
+		case "wl:mkw_finish_time":
 			if g.GameName != "mariokartwii" {
 				logging.Warn(g.ModuleName, "Ignoring", keyColored, "from wrong game")
 				continue
 			}
 
-			logging.Info(g.ModuleName, "Received race result from profile", aurora.BrightCyan(strconv.FormatUint(uint64(g.User.ProfileId), 10)))
-
-			var raceResult RaceResult
-			err := json.Unmarshal([]byte(value), &raceResult)
+			packet, err := common.Base64DwcEncoding.DecodeString(value)
 			if err != nil {
-				logging.Error(g.ModuleName, "Error parsing race result JSON:", err.Error())
-				logging.Info(g.ModuleName, "Raw payload:", aurora.BrightMagenta(value))
+				logging.Error(g.ModuleName, "Error decoding finish time:", err.Error())
+				continue
+			}
+			if len(packet) != 12 {
+				logging.Error(g.ModuleName, "Invalid finish time record length:", len(packet))
 				continue
 			}
 
-			logging.Info(g.ModuleName, "Race result version:", aurora.Yellow(raceResult.ClientReportVersion))
+			// The 12-byte report holds inGameTime, finishTime, and the lag difference.
+			inGameTime := binary.BigEndian.Uint32(packet[0:4])
+			finishTime := binary.BigEndian.Uint32(packet[4:8])
+			delta := int32(binary.BigEndian.Uint32(packet[8:12]))
+			logging.Info(g.ModuleName, "Received finish time", aurora.BrightCyan(strconv.FormatUint(uint64(finishTime), 10)),
+				"in-game", aurora.BrightCyan(strconv.FormatUint(uint64(inGameTime), 10)),
+				"lag", aurora.BrightCyan(strconv.FormatInt(int64(delta), 10)),
+				"from profile", aurora.BrightCyan(strconv.FormatUint(uint64(g.User.ProfileId), 10)))
 
-			player := raceResult.Player
-
-			logging.Info(g.ModuleName,
-				"Player",
-				"- PID:", aurora.Cyan(strconv.Itoa(player.Pid)),
-				"Time:", aurora.Cyan(strconv.Itoa(player.FinishTimeMs)), "ms",
-				"Char:", aurora.Cyan(strconv.Itoa(player.CharacterId)),
-				"Kart:", aurora.Cyan(strconv.Itoa(player.KartId)),
-				"Count:", aurora.Cyan(strconv.Itoa(player.PlayerCount)))
-
-			// Hand off to qr2 for processing. It returns the updated
-			// server-authoritative VR/BR so we can push them to the client.
-			newVR, newBR, updated := qr2.ProcessMKWRaceResult(g.User.ProfileId, player.Pid, player.FinishTimeMs, player.CharacterId, player.KartId, player.PlayerCount)
-			if updated && g.GameName == "mariokartwii" {
-				msg := "\\wl:vr\\" + strconv.Itoa(newVR) + "\\wl:br\\" + strconv.Itoa(newBR) + "\\final\\"
-				if err := common.SendPacket(ServerName, g.ConnIndex, []byte(msg)); err != nil {
-					logging.Error(g.ModuleName, "Failed to send VR/BR update to client:", err)
-				} else {
-					logging.Info(g.ModuleName, "Sent VR/BR update to client:", newVR, newBR)
-				}
+			ratings := qr2.ProcessMKWFinishTime(g.User.ProfileId, finishTime, delta)
+			for pid, vrbr := range ratings {
+				SendVRBRUpdate(pid, vrbr.VR, vrbr.BR)
 			}
+		}
+	}
+}
 
-		case "wl:mkw_race_start_time":
-			serverTime := time.Now().UnixMilli()
-			logging.Info(g.ModuleName,
-				"Race start time:", aurora.Yellow(value),
-				"Server time:", aurora.Yellow(strconv.FormatInt(serverTime, 10)))
+func SendVRBRUpdate(profileId uint32, vr int, br int) {
+	mutex.Lock()
+	session := sessions[profileId]
+	mutex.Unlock()
+	if session == nil {
+		return
+	}
+	msg := "\\wl:vr\\" + strconv.Itoa(vr) + "\\wl:br\\" + strconv.Itoa(br) + "\\final\\"
+	if err := common.SendPacket(ServerName, session.ConnIndex, []byte(msg)); err != nil {
+		logging.Error(session.ModuleName, "Failed to send VR/BR update to client:", err)
+	} else {
+		logging.Info(session.ModuleName, "Sent VR/BR update to client:", vr, br)
+	}
+}
 
-			// Parse client timestamp
-			clientTime, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				logging.Error(g.ModuleName, "Failed to parse client timestamp:", err.Error())
-				return
-			}
-
-			// Store timing data in qr2 module
-			qr2.StoreRaceStartTime(g.User.ProfileId, clientTime, serverTime)
-
-		case "wl:mkw_race_finish_time":
-			serverTime := time.Now().UnixMilli()
-			logging.Info(g.ModuleName,
-				"Race finish time:", aurora.Yellow(value),
-				"Server time:", aurora.Yellow(strconv.FormatInt(serverTime, 10)))
-
-			// Parse client timestamp
-			clientTime, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				logging.Error(g.ModuleName, "Failed to parse client finish timestamp:", err.Error())
-				return
-			}
-
-			// Store timing data in qr2 module
-			qr2.StoreRaceFinishTime(g.User.ProfileId, clientTime, serverTime)
+func init() {
+	qr2.OnRaceFinalized = func(ratings map[uint32]qr2.VRBRResult) {
+		for pid, vrbr := range ratings {
+			SendVRBRUpdate(pid, vrbr.VR, vrbr.BR)
 		}
 	}
 }

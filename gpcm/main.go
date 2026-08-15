@@ -77,6 +77,9 @@ func StartServer(reload bool) {
 	db = database.Start(config)
 	db.UpdateTables()
 
+	// Provide the raw DB pool to qr2 for race/track usage tracking
+	qr2.SetTrackDB(db.GetPool(), db.GetContext())
+
 	allowDefaultDolphinKeys = config.AllowDefaultDolphinKeys
 
 	if reload {
