@@ -115,13 +115,9 @@ func handlePinfoImpl(r *http.Request) (PinfoResponse, int) {
 		}
 	}
 
-	miiName := ""
-	miiData := ""
-	if fullAccess {
-		miiName, miiData = getPinfoMiiData(realUser.ProfileId)
-	}
+	miiName, miiData := getPinfoMiiData(realUser.ProfileId)
 
-	vr, br := 9999, 9999
+	vr, br := 5000, 5000
 	if vrbr, ok := db.GetVRBR(realUser.ProfileId); ok {
 		vr = vrbr.VR
 		br = vrbr.BR
