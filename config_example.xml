@@ -94,20 +94,14 @@
           <!-- Maximum VR/BR a player can have -->
           <maxVrLimit>30000</maxVrLimit>
           <maxBrLimit>30000</maxBrLimit>
-          <!-- Maximum VR/BR gain per single race/transaction -->
-          <maxVrGain>5000</maxVrGain>
-          <maxBrGain>5000</maxBrGain>
-          <!-- Maximum VR/BR loss per single race/transaction -->
-          <maxVrLoss>3000</maxVrLoss>
-          <maxBrLoss>3000</maxBrLoss>
-          <!-- Multipliers applied to VR/BR gains and losses -->
-          <vrGainMultiplier>1.0</vrGainMultiplier>
-          <brGainMultiplier>1.0</brGainMultiplier>
-          <vrLossMultiplier>1.0</vrLossMultiplier>
-          <brLossMultiplier>1.0</brLossMultiplier>
+          <!-- Flat integer caps on the per-race VR/BR gain/loss -->
+          <maxGain>209</maxGain>
+          <maxLoss>209</maxLoss>
+          <!-- Overall multiplier applied to the Rating.txt VR delta -->
+          <multiplier>1.0</multiplier>
           <!-- Default VR/BR for new players -->
-          <defaultVr>9999</defaultVr>
-          <defaultBr>9999</defaultBr>
+          <defaultVr>5000</defaultVr>
+          <defaultBr>5000</defaultBr>
      </vrbr>
 
      <eventReporting>

@@ -56,18 +56,13 @@ type Config struct {
 }
 
 type VRBRConfig struct {
-	MaxVRLimit       int     `xml:"maxVrLimit"`
-	MaxBRLimit       int     `xml:"maxBrLimit"`
-	MaxVRGain        int     `xml:"maxVrGain"`
-	MaxBRGain        int     `xml:"maxBrGain"`
-	MaxVRLoss        int     `xml:"maxVrLoss"`
-	MaxBRLoss        int     `xml:"maxBrLoss"`
-	VRGainMultiplier float64 `xml:"vrGainMultiplier"`
-	BRGainMultiplier float64 `xml:"brGainMultiplier"`
-	VRLossMultiplier float64 `xml:"vrLossMultiplier"`
-	BRLossMultiplier float64 `xml:"brLossMultiplier"`
-	DefaultVR        int     `xml:"defaultVr"`
-	DefaultBR        int     `xml:"defaultBr"`
+	MaxVRLimit int     `xml:"maxVrLimit"`
+	MaxBRLimit int     `xml:"maxBrLimit"`
+	MaxGain    int     `xml:"maxGain"`
+	MaxLoss    int     `xml:"maxLoss"`
+	Multiplier float64 `xml:"multiplier"`
+	DefaultVR  int     `xml:"defaultVr"`
+	DefaultBR  int     `xml:"defaultBr"`
 }
 
 type EventReportingConfig struct {

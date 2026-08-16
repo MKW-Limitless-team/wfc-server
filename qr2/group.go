@@ -726,49 +726,91 @@ func finalizeRace(group *Group, results []RaceResult) map[uint32]VRBRResult {
 	moduleName := "QR2:MKWFinishTime:" + group.GroupName
 	config := common.GetConfig()
 	maxVR := int32(config.VRBR.MaxVRLimit)
+	multiplier := float32(config.VRBR.Multiplier)
 
-	ratings := map[uint32]int32{}
+	ratings := map[uint32]float32{}
 	for _, r := range results {
 		vrbr, ok := database.GetVRBRForPool(trackPool, trackCtx, r.ProfileID)
 		if !ok {
-			ratings[r.ProfileID] = int32(config.VRBR.DefaultVR)
+			ratings[r.ProfileID] = float32(config.VRBR.DefaultVR)
 		} else {
-			ratings[r.ProfileID] = int32(vrbr.VR)
+			ratings[r.ProfileID] = float32(vrbr.VR)
 		}
 	}
 
-	changes := map[uint32]int32{}
+	deltas := map[uint32]float32{}
 	for i := range results {
 		for j := i + 1; j < len(results); j++ {
 			a := results[i]
 			b := results[j]
 			if a.FinishTime < b.FinishTime {
-				changes[a.ProfileID] += calcPosPoints(ratings[a.ProfileID], ratings[b.ProfileID], maxVR)
-				changes[b.ProfileID] += calcNegPoints(ratings[b.ProfileID], ratings[a.ProfileID], maxVR)
+				deltas[a.ProfileID] += calcPosPoints(ratings[a.ProfileID], ratings[b.ProfileID])
+				deltas[b.ProfileID] += calcNegPoints(ratings[b.ProfileID], ratings[a.ProfileID])
 			} else if b.FinishTime < a.FinishTime {
-				changes[b.ProfileID] += calcPosPoints(ratings[b.ProfileID], ratings[a.ProfileID], maxVR)
-				changes[a.ProfileID] += calcNegPoints(ratings[a.ProfileID], ratings[b.ProfileID], maxVR)
+				deltas[b.ProfileID] += calcPosPoints(ratings[b.ProfileID], ratings[a.ProfileID])
+				deltas[a.ProfileID] += calcNegPoints(ratings[a.ProfileID], ratings[b.ProfileID])
 			}
 		}
 	}
 
 	result := map[uint32]VRBRResult{}
 	for _, r := range results {
-		newVR, newBR, err := database.ApplyVRDeltaForPool(trackPool, trackCtx, r.ProfileID, int(changes[r.ProfileID]))
-		if err != nil {
-			logging.Error(moduleName, "Failed to apply VR delta:", err)
+		vrbr, ok := database.GetVRBRForPool(trackPool, trackCtx, r.ProfileID)
+		if !ok {
+			vrbr = database.VRBR{ProfileId: r.ProfileID, VR: config.VRBR.DefaultVR, BR: config.VRBR.DefaultBR}
+		}
+
+		oldRating := ratings[r.ProfileID]
+		delta := deltas[r.ProfileID]
+
+		if oldRating < 150 && delta < 0 {
+			divider := getLowVrLossDivider(oldRating)
+			if divider > 1.0 {
+				delta /= divider
+			}
+		}
+		delta *= multiplier
+		delta = clampF(delta, -float32(config.VRBR.MaxLoss), float32(config.VRBR.MaxGain))
+
+		newVR := int(oldRating + delta)
+		if newVR < 1 {
+			newVR = 1
+		}
+		if newVR > int(maxVR) {
+			newVR = int(maxVR)
+		}
+
+		if err := database.SetVRBRForPool(trackPool, trackCtx, r.ProfileID, newVR, vrbr.BR); err != nil {
+			logging.Error(moduleName, "Failed to set VR/BR:", err)
 			continue
 		}
-		result[r.ProfileID] = VRBRResult{VR: newVR, BR: newBR}
-		logging.Info(moduleName, "Applied VR delta", aurora.Cyan(strconv.Itoa(int(changes[r.ProfileID]))),
+
+		result[r.ProfileID] = VRBRResult{VR: newVR, BR: vrbr.BR}
+		logging.Info(moduleName, "Applied VR delta", aurora.Cyan(strconv.FormatFloat(float64(delta), 'f', 2, 32)),
 			"for profile", aurora.Cyan(strconv.FormatUint(uint64(r.ProfileID), 10)),
-			"new VR/BR:", aurora.Cyan(strconv.Itoa(newVR)), aurora.Cyan(strconv.Itoa(newBR)))
+			"new VR/BR:", aurora.Cyan(strconv.Itoa(newVR)), aurora.Cyan(strconv.Itoa(vrbr.BR)))
 	}
 	return result
 }
 
-var splineTerms = []int32{0, 1, 8, 50, 125}
+const (
+	splineBias  = 7499
+	splineScale = float32(0.00020004) // 1/(2*splineBias)
+)
 
+var splineTerms = []float32{0, 1, 8, 50, 125}
+
+func clampF(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// ratingCalc mirrors Rating.txt EvaluateSpline: 9-term cubic b-spline, /30.
 func ratingCalc(x float32) float32 {
 	term := int32(-2)
 	var ret float32 = 0.0
@@ -780,51 +822,47 @@ func ratingCalc(x float32) float32 {
 		if term > 4 {
 			termIdx = 4
 		}
-		y := x - float32(term)
-		if y < 0 {
-			y = -y
+		d := x - float32(term)
+		if d < 0 {
+			d = -d
 		}
-		var b float32 = 0.0
-		if y >= 0 {
-			if y < 1 {
-				b = (3*y*y*y - 6*y*y + 4) / 6
-			} else if y <= 2 {
-				y = y - 2
-				b = (-y * y * y) / 6
-			}
+		var w float32 = 0.0
+		if d <= 1.0 {
+			w = (4.0 - 6.0*d*d + 3.0*d*d*d) / 6.0
+		} else if d < 2.0 {
+			t := 2.0 - d
+			w = (t * t * t) / 6.0
 		}
+		ret += w * splineTerms[termIdx]
 		term++
-		ret += b * float32(splineTerms[termIdx])
 	}
-	return ret
+	return ret / 30.0
 }
 
-func ratingCalcPoints(difference int32, isPos bool, maxRating int32) int32 {
-	clampDiff := maxRating - 1
-	if difference < -clampDiff {
-		difference = -clampDiff
-	}
-	if difference > clampDiff {
-		difference = clampDiff
-	}
-	if !isPos {
-		difference = -difference
-	}
-	uvar2 := difference + clampDiff
-	x := float32(uvar2) * (2.0 / float32(clampDiff))
-	points := ratingCalc(x)
-	if !isPos {
-		points = -points
-	}
-	return int32(points)
+// calcPosPoints mirrors Rating.txt CalcPosPoints.
+func calcPosPoints(self, opponent float32) float32 {
+	sample := float32(splineBias) + (opponent-self)*4.0
+	sample = clampF(sample, 0.0, float32(splineBias*2))
+	return clampF(ratingCalc(sample*splineScale), 0.02, 0.24)
 }
 
-func calcPosPoints(winnerRating, loserRating int32, maxRating int32) int32 {
-	return ratingCalcPoints(loserRating-winnerRating, true, maxRating)
+// calcNegPoints mirrors Rating.txt CalcNegPoints.
+func calcNegPoints(self, opponent float32) float32 {
+	sample := float32(splineBias) - (opponent-self)*16.0
+	sample = clampF(sample, 0.0, float32(splineBias*2))
+	return clampF(-ratingCalc(sample*splineScale), -0.19, 0.0)
 }
 
-func calcNegPoints(loserRating, winnerRating int32, maxRating int32) int32 {
-	return ratingCalcPoints(winnerRating-loserRating, false, maxRating)
+// getLowVrLossDivider mirrors Rating.txt GetLowVrLossDivider.
+func getLowVrLossDivider(rating float32) float32 {
+	if rating >= 150 {
+		return 1.0
+	}
+	if rating <= 0 {
+		return 7.5
+	}
+	t := rating / 150
+	return 7.5 - 6.5*t
 }
 
 func GetRaceResultsForGroup(groupName string) map[int][]RaceResult {

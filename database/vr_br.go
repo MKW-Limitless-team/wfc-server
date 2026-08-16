@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-	"wwfc/common"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -75,38 +74,4 @@ func SetVRBRForPool(pool *pgxpool.Pool, ctx context.Context, profileId uint32, v
 		return err
 	}
 	return err
-}
-
-// ApplyVRDeltaForPool applies a VR delta to a player, clamped to [1, MaxVRLimit].
-// Returns the new VR/BR so the caller can push the update to the client.
-func ApplyVRDeltaForPool(pool *pgxpool.Pool, ctx context.Context, profileId uint32, vrDelta int) (int, int, error) {
-	config := common.GetConfig()
-	vrbr := config.VRBR
-
-	var currentVR, currentBR int
-	err := pool.QueryRow(ctx, GetVRBRQuery, profileId).Scan(&currentVR, &currentBR)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			if _, err := pool.Exec(ctx, InsertVRBRQuery, profileId, vrbr.DefaultVR, vrbr.DefaultBR); err != nil {
-				return 0, 0, err
-			}
-			currentVR = vrbr.DefaultVR
-			currentBR = vrbr.DefaultBR
-		} else {
-			return 0, 0, err
-		}
-	}
-
-	newVR := currentVR + vrDelta
-	if newVR > vrbr.MaxVRLimit {
-		newVR = vrbr.MaxVRLimit
-	}
-	if newVR < 1 {
-		newVR = 1
-	}
-
-	if err := SetVRBRForPool(pool, ctx, profileId, newVR, currentBR); err != nil {
-		return 0, 0, err
-	}
-	return newVR, currentBR, nil
 }
