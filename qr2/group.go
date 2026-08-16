@@ -739,10 +739,7 @@ func finalizeRace(group *Group, results []RaceResult) map[uint32]VRBRResult {
 
 	changes := map[uint32]int32{}
 	for i := range results {
-		for j := range results {
-			if i == j {
-				continue
-			}
+		for j := i + 1; j < len(results); j++ {
 			a := results[i]
 			b := results[j]
 			if a.FinishTime < b.FinishTime {
