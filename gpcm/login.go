@@ -429,6 +429,7 @@ func (g *GameSpySession) login(command common.GameSpyCommand) {
 		}
 		otherValues["wl:vr"] = strconv.Itoa(vrbr.VR)
 		otherValues["wl:br"] = strconv.Itoa(vrbr.BR)
+		otherValues["wl:max_vr"] = strconv.Itoa(config.VRBR.MaxVRLimit)
 		otherValues["wl:max_gain"] = strconv.Itoa(config.VRBR.MaxGain)
 		otherValues["wl:max_loss"] = strconv.Itoa(config.VRBR.MaxLoss)
 		otherValues["wl:multiplier"] = strconv.FormatFloat(config.VRBR.Multiplier, 'f', -1, 64)
